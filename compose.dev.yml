@@ -1,0 +1,38 @@
+name: NaviFinanceBotDev
+
+services:
+  navifinancepostgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: finance
+      POSTGRES_USER: finance
+      POSTGRES_PASSWORD: SecureFinance
+    volumes:
+      - navifinancepostgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  navifinancebot:
+    build:
+      context: .
+      dockerfile: src/main/docker/Dockerfile.jvm
+    restart: unless-stopped
+    depends_on:
+      navifinancepostgres:
+        condition: service_healthy
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://navifinancepostgres:5432/finance
+      QUARKUS_DATASOURCE_USERNAME: finance
+      QUARKUS_DATASOURCE_PASSWORD: SecureFinance
+      TESSDATA_PREFIX: /usr/share/tesseract-ocr/5/tessdata
+
+volumes:
+  navifinancepostgres:

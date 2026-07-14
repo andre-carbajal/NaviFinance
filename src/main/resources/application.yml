@@ -1,0 +1,19 @@
+quarkus:
+  datasource:
+    db-kind: postgresql
+    jdbc:
+      url: ${QUARKUS_DATASOURCE_JDBC_URL:jdbc:postgresql://localhost:5432/finance}
+    username: ${QUARKUS_DATASOURCE_USERNAME:finance}
+    password: ${QUARKUS_DATASOURCE_PASSWORD:finance}
+  hibernate-orm:
+    schema-management:
+      strategy: none
+  flyway:
+    migrate-at-start: true
+telegram:
+  bot:
+    token: ${TELEGRAM_BOT_TOKEN:}
+    username: ${TELEGRAM_BOT_USERNAME:}
+
+ocr:
+  tessdata-path: ${TESSDATA_PREFIX:/usr/share/tesseract-ocr/5/tessdata}
