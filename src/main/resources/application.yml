@@ -10,10 +10,15 @@ quarkus:
       strategy: none
   flyway:
     migrate-at-start: true
+  rest-client:
+    ollama-api:
+      url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      connect-timeout: ${OLLAMA_CONNECT_TIMEOUT:5000}
+      read-timeout: ${OLLAMA_READ_TIMEOUT:60000}
 telegram:
   bot:
     token: ${TELEGRAM_BOT_TOKEN:}
     username: ${TELEGRAM_BOT_USERNAME:}
 
-ocr:
-  tessdata-path: ${TESSDATA_PREFIX:/usr/share/tesseract-ocr/5/tessdata}
+ollama:
+  model: ${OLLAMA_MODEL:qwen3-vl:2b-instruct}

@@ -1,11 +1,8 @@
+# syntax=docker/dockerfile:1
 ####
 # This Dockerfile is used in order to build a container that runs the Quarkus application in JVM mode
 #
-# Before building the container image run:
-#
-# ./mvnw package
-#
-# Then, build the image with:
+# Build the image directly from source with:
 #
 # docker build -f src/main/docker/Dockerfile.jvm -t quarkus/navifinance-jvm .
 #
@@ -80,23 +77,33 @@
 # You can find more information about the UBI base runtime images and their configuration here:
 # https://rh-openjdk.github.io/redhat-openjdk-containers/
 ###
+FROM eclipse-temurin:25-jdk-noble AS build
+
+WORKDIR /workspace
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip \
+    && rm -rf /var/lib/apt/lists/*
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+COPY src/ src/
+RUN --mount=type=cache,target=/root/.m2 \
+    chmod +x mvnw \
+    && ./mvnw -B package -DskipTests
+
 FROM eclipse-temurin:25-jre-noble
 
 ENV LANGUAGE='en_US:en'
 
 USER root
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-spa \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 185 quarkus \
+RUN groupadd --gid 185 quarkus \
     && useradd --uid 185 --gid quarkus --no-create-home --shell /usr/sbin/nologin quarkus
 
 
 # We make four distinct layers so if there are application changes the library layers can be re-used
-COPY --chown=185:185 target/quarkus-app/lib/ /deployments/lib/
-COPY --chown=185:185 target/quarkus-app/*.jar /deployments/
-COPY --chown=185:185 target/quarkus-app/app/ /deployments/app/
-COPY --chown=185:185 target/quarkus-app/quarkus/ /deployments/quarkus/
+COPY --from=build --chown=185:185 /workspace/target/quarkus-app/lib/ /deployments/lib/
+COPY --from=build --chown=185:185 /workspace/target/quarkus-app/*.jar /deployments/
+COPY --from=build --chown=185:185 /workspace/target/quarkus-app/app/ /deployments/app/
+COPY --from=build --chown=185:185 /workspace/target/quarkus-app/quarkus/ /deployments/quarkus/
 
 EXPOSE 8080
 USER 185

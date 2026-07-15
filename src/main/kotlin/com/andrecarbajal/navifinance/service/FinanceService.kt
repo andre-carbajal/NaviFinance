@@ -80,6 +80,7 @@ class FinanceService(
         require(amount > BigDecimal.ZERO)
         require(draft.type in setOf("retiro", "abono"))
         require(draft.currency in setOf("PEN", "USD"))
+        require(draft.source.isNotBlank())
         return Transaccion().also { transaction ->
             transaction.usuario = user
             transaction.cuenta = account
@@ -88,7 +89,7 @@ class FinanceService(
             transaction.monto = amount
             transaction.moneda = draft.currency
             transaction.descripcion = draft.description?.takeIf(String::isNotBlank)?.take(240)
-            transaction.origen = draft.source
+            transaction.origen = draft.source.take(40)
             transaction.fecha = draft.date
             transacciones.persist(transaction)
         }

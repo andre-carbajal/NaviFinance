@@ -1,16 +1,17 @@
 # NaviFinance
 
-Bot multiusuario de Telegram para registrar ingresos y gastos personales en soles (PEN) o dólares (USD). Cada usuario queda aislado por su ID de Telegram; el bot usa long polling, por lo que no necesita un webhook ni puertos públicos.
+Bot multiusuario de Telegram para registrar ingresos y gastos personales en soles (PEN) o dólares (USD). Cada usuario
+queda aislado por su ID de Telegram; el bot usa long polling, por lo que no necesita un webhook ni puertos públicos.
 
 ## Requisitos
 
 - JDK 25 y Docker Compose para desarrollo local.
 - Un bot creado con [@BotFather](https://t.me/BotFather).
-- Tesseract con datos de idioma español para OCR fuera del contenedor.
+- Espacio libre suficiente para el modelo de visión `qwen3-vl:2b-instruct`.
 
 ## Desarrollo
 
-1. Inicia PostgreSQL:
+1. Inicia PostgreSQL y Ollama. El servicio `ollama-init` descarga `qwen3-vl:2b-instruct` automáticamente la primera vez:
 
    ```powershell
    docker compose -f compose.dev.yml up -d
@@ -24,6 +25,7 @@ Bot multiusuario de Telegram para registrar ingresos y gastos personales en sole
    $env:QUARKUS_DATASOURCE_JDBC_URL = "jdbc:postgresql://localhost:5432/finance"
    $env:QUARKUS_DATASOURCE_USERNAME = "finance"
    $env:QUARKUS_DATASOURCE_PASSWORD = "finance"
+   $env:OLLAMA_BASE_URL = "http://localhost:11434"
    ```
 
 3. Arranca Quarkus; Flyway aplica la migración automáticamente:
@@ -32,7 +34,8 @@ Bot multiusuario de Telegram para registrar ingresos y gastos personales en sole
    .\mvnw.cmd quarkus:dev
    ```
 
-Comandos: `/start`, `/cuenta_nueva`, `/cuentas`, `/registrar`, `/resumen` y `/cancelar`. En `/registrar`, PEN es la opción inicial y se puede cambiar a USD antes de confirmar.
+Comandos: `/start`, `/cuenta_nueva`, `/cuentas`, `/registrar`, `/resumen` y `/cancelar`. En `/registrar`, PEN es la
+opción inicial y se puede cambiar a USD antes de confirmar.
 
 ## Docker homelab
 
@@ -46,6 +49,7 @@ Compila primero el artefacto JVM y crea un archivo `.env` no versionado:
 POSTGRES_PASSWORD=cambia-esta-clave
 TELEGRAM_BOT_TOKEN=token-de-botfather
 TELEGRAM_BOT_USERNAME=tu_bot
+OLLAMA_MODEL=qwen3-vl:2b-instruct
 ```
 
 Después inicia el stack:
@@ -54,14 +58,19 @@ Después inicia el stack:
 docker compose up -d --build
 ```
 
-PostgreSQL usa el volumen persistente `finanzas-postgres`. Haz backups con `pg_dump` antes de actualizaciones relevantes.
+PostgreSQL y Ollama usan volúmenes persistentes. Haz backups con `pg_dump` antes de actualizaciones relevantes. Puedes
+comprobar el modelo con `docker compose exec ollama ollama list`.
 
-## OCR
+## Lectura de vouchers con Moondream
 
-Las fotos se procesan de forma temporal: se convierten a blanco y negro y se envían a Tesseract con idioma `spa`; no se guardan. El importe y fecha detectados deben revisarse y confirmar explícitamente antes de crear una transacción. Si el OCR no detecta importe, el bot solicita ingresarlo manualmente.
+Las fotos se procesan de forma temporal: se reducen a un máximo de 1600 px, se codifican en memoria y se envían a la API
+local de Ollama; no se guardan. Moondream propone si es retiro o abono, importe, moneda, fecha, descripción y banco/app
+de origen. Estos datos siempre pasan por revisión y confirmación explícita antes de crear una transacción.
 
-La precisión depende mucho de banco, iluminación y recorte. Antes de invertir en otro motor, probar al menos cinco vouchers reales, sin incorporarlos al repositorio, y registrar aquí la tasa de aciertos:
+En CPU, el análisis normalmente puede tardar entre 5 y 20 segundos. Si Ollama no responde, el modelo no está disponible
+o la salida no es válida, el bot deriva al flujo manual `/registrar`. La precisión depende del voucher, iluminación y
+recorte; prueba muestras reales sin incorporarlas al repositorio:
 
-| Muestra | Banco/app | Monto correcto | Fecha correcta | Observaciones |
-| --- | --- | --- | --- | --- |
-| Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
+| Muestra   | Banco/app | Monto correcto | Fecha correcta | Observaciones |
+|-----------|-----------|----------------|----------------|---------------|
+| Pendiente | Pendiente | Pendiente      | Pendiente      | Pendiente     |

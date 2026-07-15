@@ -1,6 +1,30 @@
 name: NaviFinanceBotDev
 
 services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: [ "CMD", "ollama", "list" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  ollama-init:
+    image: ollama/ollama:latest
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3-vl:2b-instruct}
+    entrypoint: [ "/bin/sh", "-c", "ollama pull \"$$OLLAMA_MODEL\"" ]
+
   navifinancepostgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -26,13 +50,19 @@ services:
     depends_on:
       navifinancepostgres:
         condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
       QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://navifinancepostgres:5432/finance
       QUARKUS_DATASOURCE_USERNAME: finance
       QUARKUS_DATASOURCE_PASSWORD: SecureFinance
-      TESSDATA_PREFIX: /usr/share/tesseract-ocr/5/tessdata
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3-vl:2b-instruct}
+      OLLAMA_CONNECT_TIMEOUT: ${OLLAMA_CONNECT_TIMEOUT:-5000}
+      OLLAMA_READ_TIMEOUT: ${OLLAMA_READ_TIMEOUT:-60000}
 
 volumes:
   navifinancepostgres:
+  ollama_data:
