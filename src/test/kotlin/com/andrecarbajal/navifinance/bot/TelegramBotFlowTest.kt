@@ -22,6 +22,12 @@ class TelegramBotFlowTest {
     }
 
     @Test
+    fun `transaction requires registration when user has no active accounts`() {
+        assertEquals(true, accountRegistrationRequired(0))
+        assertEquals(false, accountRegistrationRequired(1))
+    }
+
+    @Test
     fun `vision transaction with detected amount advances to category`() {
         val date = LocalDate.of(2026, 7, 14)
         val draft = TransactionDraft(

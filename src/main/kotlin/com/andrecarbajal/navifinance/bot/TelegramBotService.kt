@@ -82,7 +82,7 @@ class TelegramBotService(
             "/start" -> start(chatId, user)
             "/cuenta_nueva" -> newAccount(chatId)
             "/cuentas" -> listAccounts(chatId, user)
-            "/registrar" -> beginTransaction(chatId)
+            "/registrar" -> if (ensureAccountRegistered(chatId, user)) beginTransaction(chatId)
             "/resumen" -> summary(chatId, user)
             "/cancelar" -> {
                 states.clear(chatId); send(chatId, "Flujo cancelado.")
@@ -106,6 +106,15 @@ class TelegramBotService(
     private fun newAccount(chatId: Long) {
         states.put(chatId, ConversationState(ConversationStep.ACCOUNT_NAME))
         send(chatId, "¿Cómo se llama la cuenta? (por ejemplo: BCP principal)")
+    }
+
+    private fun ensureAccountRegistered(chatId: Long, user: Usuario): Boolean {
+        if (!accountRegistrationRequired(finance.activeAccounts(user).size)) return true
+
+        states.clear(chatId)
+        send(chatId, "Primero debes registrar una cuenta para poder añadir movimientos.")
+        newAccount(chatId)
+        return false
     }
 
     private fun listAccounts(chatId: Long, user: Usuario) {
@@ -486,7 +495,9 @@ class TelegramBotService(
     private fun photo(update: Update) {
         val message = update.message
         val chatId = message.chatId
-        finance.getOrCreateUser(message.from.id, message.from.userName ?: message.from.firstName)
+        val user = finance.getOrCreateUser(message.from.id, message.from.userName ?: message.from.firstName)
+        if (!ensureAccountRegistered(chatId, user)) return
+
         val photo = message.photo.maxByOrNull { it.fileSize ?: 0 } ?: return
         send(chatId, "🔎 Procesando voucher...")
         runCatching {
@@ -554,6 +565,8 @@ class TelegramBotService(
 
 internal fun nextStepAfterAccount(draft: TransactionDraft): ConversationStep =
     if (draft.amount == null) ConversationStep.EXPECTING_AMOUNT else ConversationStep.SELECTING_CATEGORY
+
+internal fun accountRegistrationRequired(activeAccountCount: Int): Boolean = activeAccountCount == 0
 
 private val DISPLAY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy")
 
