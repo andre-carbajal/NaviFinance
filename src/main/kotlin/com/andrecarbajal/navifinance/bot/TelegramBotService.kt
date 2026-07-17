@@ -17,12 +17,13 @@ import org.jboss.logging.Logger
 import org.telegram.telegrambots.longpolling.TelegramBotsLongPollingApplication
 import org.telegram.telegrambots.longpolling.util.LongPollingSingleThreadUpdateConsumer
 import org.telegram.telegrambots.meta.api.methods.GetFile
+import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage
 import org.telegram.telegrambots.meta.api.objects.Update
+import org.telegram.telegrambots.meta.api.objects.commands.BotCommand
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardRow
-import org.telegram.telegrambots.meta.exceptions.TelegramApiException
 import org.telegram.telegrambots.meta.generics.TelegramClient
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -47,9 +48,12 @@ class TelegramBotService(
         val application = TelegramBotsLongPollingApplication()
         try {
             application.registerBot(config.token(), this)
+            check(telegramClient.execute(SetMyCommands(botCommands()))) {
+                "Telegram rejected the bot command menu"
+            }
             pollingApplication = application
-            log.info("Telegram bot registered with long polling")
-        } catch (error: TelegramApiException) {
+            log.info("Telegram bot registered with long polling and command menu")
+        } catch (error: Exception) {
             runCatching { application.close() }
             throw IllegalStateException("Unable to register Telegram bot", error)
         }
@@ -567,6 +571,15 @@ internal fun nextStepAfterAccount(draft: TransactionDraft): ConversationStep =
     if (draft.amount == null) ConversationStep.EXPECTING_AMOUNT else ConversationStep.SELECTING_CATEGORY
 
 internal fun accountRegistrationRequired(activeAccountCount: Int): Boolean = activeAccountCount == 0
+
+internal fun botCommands(): List<BotCommand> = listOf(
+    BotCommand("start", "Iniciar el bot"),
+    BotCommand("cuenta_nueva", "Registrar una cuenta"),
+    BotCommand("cuentas", "Ver tus cuentas"),
+    BotCommand("registrar", "Registrar un retiro o abono"),
+    BotCommand("resumen", "Ver el resumen del mes"),
+    BotCommand("cancelar", "Cancelar el flujo actual")
+)
 
 private val DISPLAY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy")
 

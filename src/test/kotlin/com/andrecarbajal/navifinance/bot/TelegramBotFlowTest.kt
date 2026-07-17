@@ -9,6 +9,17 @@ import java.time.LocalDate
 
 class TelegramBotFlowTest {
     @Test
+    fun `command menu exposes every supported bot command`() {
+        val commands = botCommands()
+
+        assertEquals(
+            listOf("start", "cuenta_nueva", "cuentas", "registrar", "resumen", "cancelar"),
+            commands.map { it.command }
+        )
+        assertEquals(true, commands.all { it.description.isNotBlank() })
+    }
+
+    @Test
     fun `display date uses day month year format`() {
         assertEquals("14/07/2026", formatDisplayDate(LocalDate.of(2026, 7, 14)))
     }
