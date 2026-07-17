@@ -21,7 +21,6 @@ queda aislado por su ID de Telegram; el bot usa long polling, por lo que no nece
 
    ```powershell
    $env:TELEGRAM_BOT_TOKEN = "..."
-   $env:TELEGRAM_BOT_USERNAME = "tu_bot"
    $env:QUARKUS_DATASOURCE_JDBC_URL = "jdbc:postgresql://localhost:5432/finance"
    $env:QUARKUS_DATASOURCE_USERNAME = "finance"
    $env:QUARKUS_DATASOURCE_PASSWORD = "finance"
@@ -48,7 +47,6 @@ Compila primero el artefacto JVM y crea un archivo `.env` no versionado:
 ```dotenv
 POSTGRES_PASSWORD=cambia-esta-clave
 TELEGRAM_BOT_TOKEN=token-de-botfather
-TELEGRAM_BOT_USERNAME=tu_bot
 OLLAMA_MODEL=qwen3-vl:2b-instruct
 ```
 

@@ -9,19 +9,21 @@ import com.andrecarbajal.navifinance.service.FinanceService
 import com.andrecarbajal.navifinance.service.TransactionDraft
 import com.andrecarbajal.navifinance.util.Money
 import com.andrecarbajal.navifinance.vision.VoucherVisionClient
+import io.quarkus.runtime.ShutdownEvent
 import io.quarkus.runtime.StartupEvent
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.event.Observes
 import org.jboss.logging.Logger
-import org.telegram.telegrambots.bots.TelegramLongPollingBot
-import org.telegram.telegrambots.meta.TelegramBotsApi
+import org.telegram.telegrambots.longpolling.TelegramBotsLongPollingApplication
+import org.telegram.telegrambots.longpolling.util.LongPollingSingleThreadUpdateConsumer
 import org.telegram.telegrambots.meta.api.methods.GetFile
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage
 import org.telegram.telegrambots.meta.api.objects.Update
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardRow
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException
-import org.telegram.telegrambots.updatesreceivers.DefaultBotSession
+import org.telegram.telegrambots.meta.generics.TelegramClient
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import javax.imageio.ImageIO
@@ -31,25 +33,37 @@ class TelegramBotService(
     private val config: BotConfig,
     private val finance: FinanceService,
     private val states: ConversationStateManager,
-    private val vision: VoucherVisionClient
-) : TelegramLongPollingBot(config.token()) {
+    private val vision: VoucherVisionClient,
+    private val telegramClient: TelegramClient
+) : LongPollingSingleThreadUpdateConsumer {
     private val log = Logger.getLogger(TelegramBotService::class.java)
+    private var pollingApplication: TelegramBotsLongPollingApplication? = null
 
     fun register(@Observes event: StartupEvent) {
-        if (config.token().isBlank() || config.username().isBlank()) {
-            log.warn("Telegram bot is disabled: TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME are required")
+        if (config.token().isBlank()) {
+            log.warn("Telegram bot is disabled: TELEGRAM_BOT_TOKEN is required")
             return
         }
+        val application = TelegramBotsLongPollingApplication()
         try {
-            TelegramBotsApi(DefaultBotSession::class.java).registerBot(this)
+            application.registerBot(config.token(), this)
+            pollingApplication = application
+            log.info("Telegram bot registered with long polling")
         } catch (error: TelegramApiException) {
+            runCatching { application.close() }
             throw IllegalStateException("Unable to register Telegram bot", error)
         }
     }
 
-    override fun getBotUsername(): String = config.username()
+    fun shutdown(@Observes event: ShutdownEvent) {
+        val application = pollingApplication ?: return
+        pollingApplication = null
+        runCatching { application.close() }
+            .onSuccess { log.info("Telegram bot long polling stopped") }
+            .onFailure { error -> log.error("Unable to stop Telegram bot long polling", error) }
+    }
 
-    override fun onUpdateReceived(update: Update) {
+    override fun consume(update: Update) {
         runCatching {
             when {
                 update.hasCallbackQuery() -> callback(update)
@@ -470,14 +484,14 @@ class TelegramBotService(
     }.getOrNull()
 
     private fun photo(update: Update) {
-        val message = update.message;
+        val message = update.message
         val chatId = message.chatId
         finance.getOrCreateUser(message.from.id, message.from.userName ?: message.from.firstName)
         val photo = message.photo.maxByOrNull { it.fileSize ?: 0 } ?: return
         send(chatId, "🔎 Procesando voucher...")
         runCatching {
-            val file = execute(GetFile(photo.fileId))
-            val downloaded = downloadFile(file)
+            val file = telegramClient.execute(GetFile(photo.fileId))
+            val downloaded = telegramClient.downloadFile(file)
             try {
                 val image = ImageIO.read(downloaded) ?: error("La imagen no es válida")
                 vision.analyze(image)
@@ -527,14 +541,15 @@ class TelegramBotService(
     }
 
     private fun send(chatId: Long, text: String, markup: InlineKeyboardMarkup? = null) {
-        runCatching { execute(SendMessage(chatId.toString(), text).also { it.replyMarkup = markup }) }
+        runCatching { telegramClient.execute(SendMessage(chatId.toString(), text).also { it.replyMarkup = markup }) }
             .onFailure { error -> log.error("Failed to send Telegram message", error) }
     }
 
     private fun button(text: String, data: String): InlineKeyboardButton =
         InlineKeyboardButton(text).also { it.callbackData = data }
 
-    private fun keyboard(rows: List<List<InlineKeyboardButton>>): InlineKeyboardMarkup = InlineKeyboardMarkup(rows)
+    private fun keyboard(rows: List<List<InlineKeyboardButton>>): InlineKeyboardMarkup =
+        InlineKeyboardMarkup(rows.map(::InlineKeyboardRow))
 }
 
 internal fun nextStepAfterAccount(draft: TransactionDraft): ConversationStep =

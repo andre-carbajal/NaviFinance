@@ -50,7 +50,6 @@ services:
         condition: service_completed_successfully
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
-      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:?Set TELEGRAM_BOT_USERNAME in .env}
       QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://navifinancepostgres:5432/${POSTGRES_DB:-finance}
       QUARKUS_DATASOURCE_USERNAME: ${POSTGRES_USER:-finance}
       QUARKUS_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
