@@ -33,8 +33,15 @@ queda aislado por su ID de Telegram; el bot usa long polling, por lo que no nece
    .\mvnw.cmd quarkus:dev
    ```
 
-Comandos: `/start`, `/cuenta_nueva`, `/cuentas`, `/registrar`, `/resumen` y `/cancelar`. En `/registrar`, PEN es la
-opción inicial y se puede cambiar a USD antes de confirmar.
+Comandos: `/start`, `/cuenta_nueva`, `/cuentas`, `/registrar`, `/resumen` y `/cancelar`. Al crear una cuenta, el bot
+solicita sus saldos actuales en PEN y USD (se puede ingresar `0`). En `/registrar`, PEN es la opción inicial y se puede
+cambiar a USD antes de confirmar.
+
+`/resumen` muestra cada cuenta por separado. Para el mes actual presenta abonos y retiros en ambas monedas, junto con el
+saldo disponible de cuentas de débito o la deuda pendiente de cuentas de crédito. El botón **Ver detalle por categoría**
+desglosa los movimientos de esa cuenta y mes. Las cuentas creadas antes de esta funcionalidad pedirán sus saldos una
+sola
+vez antes del siguiente `/resumen` o `/registrar`.
 
 ## Docker homelab
 

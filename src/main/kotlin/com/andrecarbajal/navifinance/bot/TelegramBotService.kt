@@ -3,8 +3,11 @@ package com.andrecarbajal.navifinance.bot
 import com.andrecarbajal.navifinance.bot.state.ConversationState
 import com.andrecarbajal.navifinance.bot.state.ConversationStateManager
 import com.andrecarbajal.navifinance.bot.state.ConversationStep
+import com.andrecarbajal.navifinance.bot.state.ResumeAction
 import com.andrecarbajal.navifinance.config.BotConfig
 import com.andrecarbajal.navifinance.entity.Usuario
+import com.andrecarbajal.navifinance.service.AccountCategorySummary
+import com.andrecarbajal.navifinance.service.AccountSummary
 import com.andrecarbajal.navifinance.service.FinanceService
 import com.andrecarbajal.navifinance.service.TransactionDraft
 import com.andrecarbajal.navifinance.util.Money
@@ -26,6 +29,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardRow
 import org.telegram.telegrambots.meta.generics.TelegramClient
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import javax.imageio.ImageIO
 
@@ -86,7 +90,11 @@ class TelegramBotService(
             "/start" -> start(chatId, user)
             "/cuenta_nueva" -> newAccount(chatId)
             "/cuentas" -> listAccounts(chatId, user)
-            "/registrar" -> if (ensureAccountRegistered(chatId, user)) beginTransaction(chatId)
+            "/registrar" -> if (
+                ensureAccountRegistered(chatId, user) &&
+                ensureBalancesConfigured(chatId, user, ResumeAction.REGISTER)
+            ) beginTransaction(chatId)
+
             "/resumen" -> summary(chatId, user)
             "/cancelar" -> {
                 states.clear(chatId); send(chatId, "Flujo cancelado.")
@@ -121,6 +129,105 @@ class TelegramBotService(
         return false
     }
 
+    private fun ensureBalancesConfigured(chatId: Long, user: Usuario, resumeAction: ResumeAction): Boolean {
+        val pending = finance.pendingBalanceAccounts(user).firstOrNull() ?: return true
+        beginBalanceConfiguration(chatId, pending.id ?: return false, pending.nombre, pending.tipo, resumeAction)
+        return false
+    }
+
+    private fun beginBalanceConfiguration(
+        chatId: Long,
+        accountId: Long,
+        accountName: String,
+        accountType: String,
+        resumeAction: ResumeAction
+    ) {
+        states.put(
+            chatId,
+            ConversationState(
+                step = ConversationStep.ACCOUNT_BALANCE_PEN,
+                accountName = accountName,
+                accountType = accountType,
+                accountIdToConfigure = accountId,
+                resumeAction = resumeAction
+            )
+        )
+        send(
+            chatId,
+            "La cuenta $accountName necesita configurar sus saldos. ${accountBalanceQuestion(accountType, "PEN")}"
+        )
+    }
+
+    private fun showAccountConfirmation(chatId: Long, state: ConversationState) {
+        state.step = ConversationStep.ACCOUNT_CONFIRMING
+        val balanceLabel = if (state.accountType == "credito") "Deuda actual" else "Saldo actual"
+        send(
+            chatId,
+            "Cuenta: ${state.accountName}\nTipo: ${state.accountType}\n$balanceLabel PEN: ${
+                Money.format(requireNotNull(state.accountBalancePen), "PEN")
+            }\n$balanceLabel USD: ${
+                Money.format(requireNotNull(state.accountBalanceUsd), "USD")
+            }\n\n¿Confirmas estos saldos?",
+            keyboard(
+                listOf(
+                    listOf(button("✅ Confirmar", "account-confirm")),
+                    listOf(button("✏️ Corregir saldos", "account-balances-retry")),
+                    listOf(button("❌ Cancelar", "cancel"))
+                )
+            )
+        )
+    }
+
+    private fun completeAccountSetup(chatId: Long, user: Usuario, state: ConversationState) {
+        val balancePen = requireNotNull(state.accountBalancePen)
+        val balanceUsd = requireNotNull(state.accountBalanceUsd)
+        val existingAccountId = state.accountIdToConfigure
+        if (existingAccountId == null) {
+            finance.createAccount(
+                user,
+                requireNotNull(state.accountName),
+                requireNotNull(state.accountType),
+                balancePen,
+                balanceUsd
+            )
+            states.clear(chatId)
+            send(chatId, "✅ Cuenta creada con sus saldos actuales. Usa /registrar para añadir un movimiento.")
+            return
+        }
+
+        finance.configureAccountBalances(user, existingAccountId, balancePen, balanceUsd)
+        send(chatId, "✅ Saldos configurados para ${state.accountName}.")
+        val nextPending = finance.pendingBalanceAccounts(user).firstOrNull()
+        if (nextPending != null) {
+            beginBalanceConfiguration(
+                chatId,
+                requireNotNull(nextPending.id),
+                nextPending.nombre,
+                nextPending.tipo,
+                requireNotNull(state.resumeAction)
+            )
+            return
+        }
+
+        val resumeAction = state.resumeAction
+        states.clear(chatId)
+        when (resumeAction) {
+            ResumeAction.SUMMARY -> showSummary(chatId, user)
+            ResumeAction.REGISTER -> beginTransaction(chatId)
+            ResumeAction.VOUCHER_RETRY -> send(chatId, "Saldos listos. Vuelve a enviar la foto del voucher.")
+            null -> Unit
+        }
+    }
+
+    private fun balanceValidationMessage(): String =
+        "Saldo inválido. Ingresa 0 o un número positivo con hasta dos decimales y máximo 9999999999.99."
+
+    private fun accountBalanceQuestion(accountType: String?, currency: String): String {
+        val concept = if (accountType == "credito") "deuda pendiente actual" else "saldo disponible actual"
+        val currencyName = if (currency == "USD") "dólares (USD)" else "soles (PEN)"
+        return "¿Cuál es la $concept en $currencyName? Puedes escribir 0."
+    }
+
     private fun listAccounts(chatId: Long, user: Usuario) {
         val accounts = finance.activeAccounts(user)
         send(
@@ -128,22 +235,52 @@ class TelegramBotService(
             if (accounts.isEmpty()) "No tienes cuentas activas. Usa /cuenta_nueva." else accounts.joinToString(
                 "\n",
                 "Tus cuentas:\n"
-            ) { "• ${it.nombre} (${it.tipo})" })
+            ) {
+                "• ${it.nombre} (${it.tipo})${if (it.hasConfiguredBalances()) "" else " — saldo pendiente"}"
+            })
     }
 
     private fun summary(chatId: Long, user: Usuario) {
-        val totals = finance.monthlySummary(user)
-        if (totals.isEmpty()) {
-            send(chatId, "No registraste movimientos este mes.")
+        if (!ensureBalancesConfigured(chatId, user, ResumeAction.SUMMARY)) return
+        showSummary(chatId, user)
+    }
+
+    private fun showSummary(chatId: Long, user: Usuario) {
+        val month = YearMonth.now()
+        val summaries = finance.monthlyAccountSummaries(user, month)
+        if (summaries.isEmpty()) {
+            send(chatId, "No tienes cuentas activas. Usa /cuenta_nueva.")
             return
         }
-        val message = totals.joinToString("\n\n", "Resumen del mes:\n") { total ->
-            "${if (total.currency == "USD") "🇺🇸 USD" else "🇵🇪 PEN"}\n" +
-                    "Abonos: ${Money.format(total.income, total.currency)}\n" +
-                    "Retiros: ${Money.format(total.expenses, total.currency)}\n" +
-                    "Balance: ${Money.format(total.balance, total.currency)}"
+        send(chatId, "Resumen del mes ${month.monthValue.toString().padStart(2, '0')}/${month.year}:")
+        summaries.forEach { accountSummary ->
+            send(
+                chatId,
+                formatAccountSummary(accountSummary),
+                keyboard(
+                    listOf(
+                        listOf(
+                            button(
+                                "📊 Ver detalle por categoría",
+                                "summary-detail:${accountSummary.accountId}:$month"
+                            )
+                        )
+                    )
+                )
+            )
         }
-        send(chatId, message)
+    }
+
+    private fun showCategoryDetail(chatId: Long, user: Usuario, callbackData: String) {
+        val request = parseSummaryDetailCallback(callbackData) ?: run {
+            send(chatId, "El detalle solicitado no es válido.")
+            return
+        }
+        val detail = finance.monthlyCategorySummary(user, request.accountId, request.month) ?: run {
+            send(chatId, "Esa cuenta no está disponible.")
+            return
+        }
+        sendLongMessage(chatId, formatCategorySummary(detail))
     }
 
     private fun beginTransaction(chatId: Long, draft: TransactionDraft = TransactionDraft(), user: Usuario? = null) {
@@ -161,21 +298,32 @@ class TelegramBotService(
         val callback = update.callbackQuery
         val chatId = callback.message.chatId
         val user = finance.getOrCreateUser(callback.from.id, callback.from.userName ?: callback.from.firstName)
+        val data = callback.data
+        if (data.startsWith("summary-detail:")) {
+            showCategoryDetail(chatId, user, data)
+            return
+        }
         val state = states.get(chatId) ?: run {
             send(
                 chatId,
                 "Este flujo venció. Usa /registrar para comenzar de nuevo."
             ); return
         }
-        val data = callback.data
         when {
             data.startsWith("account-type:") && state.step == ConversationStep.ACCOUNT_TYPE -> {
-                finance.createAccount(
-                    user,
-                    requireNotNull(state.accountName),
-                    data.removePrefix("account-type:")
-                ); states.clear(chatId)
-                send(chatId, "Cuenta creada. Usa /registrar cuando quieras añadir un movimiento.")
+                state.accountType = data.removePrefix("account-type:")
+                state.step = ConversationStep.ACCOUNT_BALANCE_PEN
+                send(chatId, accountBalanceQuestion(state.accountType, "PEN"))
+            }
+
+            data == "account-confirm" && state.step == ConversationStep.ACCOUNT_CONFIRMING ->
+                completeAccountSetup(chatId, user, state)
+
+            data == "account-balances-retry" && state.step == ConversationStep.ACCOUNT_CONFIRMING -> {
+                state.accountBalancePen = null
+                state.accountBalanceUsd = null
+                state.step = ConversationStep.ACCOUNT_BALANCE_PEN
+                send(chatId, "Vamos a corregirlos. ${accountBalanceQuestion(state.accountType, "PEN")}")
             }
 
             data.startsWith("type:") && state.step == ConversationStep.SELECTING_TYPE -> {
@@ -262,7 +410,12 @@ class TelegramBotService(
         val state = states.get(chatId) ?: run { send(chatId, "No tengo un flujo activo. Usa /registrar."); return }
         when (state.step) {
             ConversationStep.ACCOUNT_NAME -> {
-                state.accountName = input.take(80); state.step = ConversationStep.ACCOUNT_TYPE; send(
+                val name = input.trim().take(80)
+                if (name.isBlank()) {
+                    send(chatId, "El nombre de la cuenta no puede quedar vacío.")
+                    return
+                }
+                state.accountName = name; state.step = ConversationStep.ACCOUNT_TYPE; send(
                     chatId,
                     "Selecciona el tipo.",
                     keyboard(
@@ -275,6 +428,17 @@ class TelegramBotService(
                     )
                 )
             }
+
+            ConversationStep.ACCOUNT_BALANCE_PEN -> Money.parseNonNegative(input)?.let {
+                state.accountBalancePen = it
+                state.step = ConversationStep.ACCOUNT_BALANCE_USD
+                send(chatId, accountBalanceQuestion(state.accountType, "USD"))
+            } ?: send(chatId, balanceValidationMessage())
+
+            ConversationStep.ACCOUNT_BALANCE_USD -> Money.parseNonNegative(input)?.let {
+                state.accountBalanceUsd = it
+                showAccountConfirmation(chatId, state)
+            } ?: send(chatId, balanceValidationMessage())
 
             ConversationStep.EXPECTING_AMOUNT -> Money.parse(input)?.let {
                 state.draft.amount = it
@@ -501,6 +665,7 @@ class TelegramBotService(
         val chatId = message.chatId
         val user = finance.getOrCreateUser(message.from.id, message.from.userName ?: message.from.firstName)
         if (!ensureAccountRegistered(chatId, user)) return
+        if (!ensureBalancesConfigured(chatId, user, ResumeAction.VOUCHER_RETRY)) return
 
         val photo = message.photo.maxByOrNull { it.fileSize ?: 0 } ?: return
         send(chatId, "🔎 Procesando voucher...")
@@ -560,6 +725,21 @@ class TelegramBotService(
             .onFailure { error -> log.error("Failed to send Telegram message", error) }
     }
 
+    private fun sendLongMessage(chatId: Long, text: String) {
+        val chunks = mutableListOf<String>()
+        var current = StringBuilder()
+        text.lineSequence().forEach { line ->
+            if (current.isNotEmpty() && current.length + line.length + 1 > TELEGRAM_MESSAGE_LIMIT) {
+                chunks += current.toString().trimEnd()
+                current = StringBuilder()
+            }
+            if (current.isNotEmpty()) current.append('\n')
+            current.append(line)
+        }
+        if (current.isNotEmpty()) chunks += current.toString().trimEnd()
+        chunks.forEach { send(chatId, it) }
+    }
+
     private fun button(text: String, data: String): InlineKeyboardButton =
         InlineKeyboardButton(text).also { it.callbackData = data }
 
@@ -571,6 +751,51 @@ internal fun nextStepAfterAccount(draft: TransactionDraft): ConversationStep =
     if (draft.amount == null) ConversationStep.EXPECTING_AMOUNT else ConversationStep.SELECTING_CATEGORY
 
 internal fun accountRegistrationRequired(activeAccountCount: Int): Boolean = activeAccountCount == 0
+
+internal data class SummaryDetailRequest(val accountId: Long, val month: YearMonth)
+
+internal fun parseSummaryDetailCallback(data: String): SummaryDetailRequest? = runCatching {
+    val parts = data.removePrefix("summary-detail:").split(':')
+    require(data.startsWith("summary-detail:") && parts.size == 2)
+    SummaryDetailRequest(parts[0].toLong(), YearMonth.parse(parts[1]))
+}.getOrNull()
+
+internal fun formatAccountSummary(summary: AccountSummary): String = buildString {
+    append("🏦 ${summary.accountName} (${if (summary.accountType == "credito") "Crédito" else "Débito"})")
+    summary.currencies.forEach { currency ->
+        append("\n\n${if (currency.currency == "USD") "🇺🇸 USD" else "🇵🇪 PEN"}")
+        append("\nAbonos del mes: ${Money.format(currency.income, currency.currency)}")
+        append("\nRetiros del mes: ${Money.format(currency.expenses, currency.currency)}")
+        val label = when {
+            summary.accountType == "credito" && currency.currentBalance.signum() < 0 -> "Saldo a favor"
+            summary.accountType == "credito" -> "Deuda pendiente"
+            currency.currentBalance.signum() < 0 -> "Sobregiro"
+            else -> "Saldo disponible"
+        }
+        append("\n$label: ${Money.format(currency.currentBalance.abs(), currency.currency)}")
+    }
+}
+
+internal fun formatCategorySummary(summary: AccountCategorySummary): String = buildString {
+    append(
+        "Detalle por categoría — ${summary.accountName} " +
+                "(${summary.month.monthValue.toString().padStart(2, '0')}/${summary.month.year})"
+    )
+    if (summary.entries.isEmpty()) {
+        append("\n\nNo registraste movimientos en esta cuenta durante el mes.")
+        return@buildString
+    }
+    listOf("PEN", "USD").forEach { currency ->
+        val entries = summary.entries.filter { it.currency == currency }
+        if (entries.isEmpty()) return@forEach
+        append("\n\n${if (currency == "USD") "🇺🇸 USD" else "🇵🇪 PEN"}")
+        entries.forEach { entry ->
+            append("\n• ${entry.category}")
+            append("\n  Abonos: ${Money.format(entry.income, currency)}")
+            append("\n  Retiros: ${Money.format(entry.expenses, currency)}")
+        }
+    }
+}
 
 internal fun botCommands(): List<BotCommand> = listOf(
     BotCommand("start", "Iniciar el bot"),
@@ -584,3 +809,5 @@ internal fun botCommands(): List<BotCommand> = listOf(
 private val DISPLAY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy")
 
 internal fun formatDisplayDate(date: LocalDate): String = date.format(DISPLAY_DATE_FORMATTER)
+
+private const val TELEGRAM_MESSAGE_LIMIT = 4000
