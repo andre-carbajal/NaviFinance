@@ -25,6 +25,9 @@ class Cuenta : PanacheEntityBase {
     @Column(nullable = false)
     var activo: Boolean = true
 
+    @Column(length = 3)
+    var moneda: String? = null
+
     @Column(name = "saldo_base_pen", precision = 12, scale = 2)
     var saldoBasePen: BigDecimal? = null
 
@@ -34,6 +37,13 @@ class Cuenta : PanacheEntityBase {
     @Column(name = "saldo_configurado_en")
     var saldoConfiguradoEn: LocalDateTime? = null
 
-    fun hasConfiguredBalances(): Boolean =
-        saldoBasePen != null && saldoBaseUsd != null && saldoConfiguradoEn != null
+    fun hasConfiguredBalances(): Boolean = when (tipo) {
+        "debito" -> moneda in setOf(
+            "PEN",
+            "USD"
+        ) && saldoBasePen != null && saldoBaseUsd != null && saldoConfiguradoEn != null
+
+        "credito" -> saldoBasePen != null && saldoBaseUsd != null && saldoConfiguradoEn != null
+        else -> false
+    }
 }

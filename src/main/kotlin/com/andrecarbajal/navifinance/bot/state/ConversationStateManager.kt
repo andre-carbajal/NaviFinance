@@ -8,8 +8,9 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 enum class ConversationStep {
-    ACCOUNT_NAME, ACCOUNT_TYPE, ACCOUNT_BALANCE_PEN, ACCOUNT_BALANCE_USD, ACCOUNT_CONFIRMING,
-    SELECTING_TYPE, SELECTING_ACCOUNT, EXPECTING_AMOUNT,
+    ACCOUNT_NAME, ACCOUNT_TYPE, SELECTING_ACCOUNT_CURRENCY, ACCOUNT_BALANCE_PEN, ACCOUNT_BALANCE_USD,
+    ACCOUNT_CONFIRMING, SELECTING_TYPE, SELECTING_ACCOUNT, SELECTING_PAYMENT_SOURCE,
+    SELECTING_DEBT_CURRENCY, EXPECTING_AMOUNT, EXPECTING_PAYMENT_AMOUNT, EXPECTING_EXCHANGE_RATE,
     SELECTING_CURRENCY, SELECTING_CATEGORY, EXPECTING_CATEGORY_NAME, EXPECTING_DESCRIPTION, EXPECTING_SOURCE,
     EXPECTING_DATE, SELECTING_EDIT_FIELD, CONFIRMING, VOUCHER_REVIEW
 }
@@ -21,6 +22,7 @@ data class ConversationState(
     val draft: TransactionDraft = TransactionDraft(),
     var accountName: String? = null,
     var accountType: String? = null,
+    var accountCurrency: String? = null,
     var accountBalancePen: BigDecimal? = null,
     var accountBalanceUsd: BigDecimal? = null,
     var accountIdToConfigure: Long? = null,

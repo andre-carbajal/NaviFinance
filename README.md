@@ -33,15 +33,15 @@ queda aislado por su ID de Telegram; el bot usa long polling, por lo que no nece
    .\mvnw.cmd quarkus:dev
    ```
 
-Comandos: `/start`, `/cuenta_nueva`, `/cuentas`, `/registrar`, `/resumen` y `/cancelar`. Al crear una cuenta, el bot
-solicita sus saldos actuales en PEN y USD (se puede ingresar `0`). En `/registrar`, PEN es la opción inicial y se puede
-cambiar a USD antes de confirmar.
+Comandos: `/start`, `/cuenta_nueva`, `/cuentas`, `/registrar`, `/resumen` y `/cancelar`. Las cuentas de débito se crean
+en una sola moneda (PEN o USD) y sólo aceptan movimientos en ella. Las cuentas de crédito mantienen deuda separada en
+PEN y USD: pueden registrar cargos en ambas y pagarse desde una cuenta de débito. Si la moneda pagada difiere de la
+deuda a reducir, el bot pide una tasa manual expresada como `1 USD = S/ X` y guarda el importe pagado y el aplicado.
 
-`/resumen` muestra cada cuenta por separado. Para el mes actual presenta abonos y retiros en ambas monedas, junto con el
-saldo disponible de cuentas de débito o la deuda pendiente de cuentas de crédito. El botón **Ver detalle por categoría**
-desglosa los movimientos de esa cuenta y mes. Las cuentas creadas antes de esta funcionalidad pedirán sus saldos una
-sola
-vez antes del siguiente `/resumen` o `/registrar`.
+`/resumen` muestra cada cuenta por separado. Para el mes actual presenta abonos y retiros en la moneda de cada débito;
+en crédito muestra cargos, pagos aplicados, deuda pendiente y los importes realmente pagados desde débito. El botón
+**Ver detalle por categoría** desglosa los movimientos de esa cuenta y mes. Las cuentas creadas antes de esta
+funcionalidad pedirán su configuración antes del siguiente `/resumen` o `/registrar`.
 
 ## Docker homelab
 

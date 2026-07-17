@@ -6,10 +6,7 @@ import com.andrecarbajal.navifinance.bot.state.ConversationStep
 import com.andrecarbajal.navifinance.bot.state.ResumeAction
 import com.andrecarbajal.navifinance.config.BotConfig
 import com.andrecarbajal.navifinance.entity.Usuario
-import com.andrecarbajal.navifinance.service.AccountCategorySummary
-import com.andrecarbajal.navifinance.service.AccountSummary
-import com.andrecarbajal.navifinance.service.FinanceService
-import com.andrecarbajal.navifinance.service.TransactionDraft
+import com.andrecarbajal.navifinance.service.*
 import com.andrecarbajal.navifinance.util.Money
 import com.andrecarbajal.navifinance.vision.VoucherVisionClient
 import io.quarkus.runtime.ShutdownEvent
@@ -28,6 +25,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardRow
 import org.telegram.telegrambots.meta.generics.TelegramClient
+import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
@@ -131,7 +129,14 @@ class TelegramBotService(
 
     private fun ensureBalancesConfigured(chatId: Long, user: Usuario, resumeAction: ResumeAction): Boolean {
         val pending = finance.pendingBalanceAccounts(user).firstOrNull() ?: return true
-        beginBalanceConfiguration(chatId, pending.id ?: return false, pending.nombre, pending.tipo, resumeAction)
+        beginBalanceConfiguration(
+            chatId,
+            pending.id ?: return false,
+            pending.nombre,
+            pending.tipo,
+            pending.moneda,
+            resumeAction
+        )
         return false
     }
 
@@ -140,34 +145,55 @@ class TelegramBotService(
         accountId: Long,
         accountName: String,
         accountType: String,
+        accountCurrency: String?,
         resumeAction: ResumeAction
     ) {
         states.put(
             chatId,
             ConversationState(
-                step = ConversationStep.ACCOUNT_BALANCE_PEN,
+                step = if (accountType == "debito" && accountCurrency == null) ConversationStep.SELECTING_ACCOUNT_CURRENCY else balanceStep(
+                    accountCurrency
+                ),
                 accountName = accountName,
                 accountType = accountType,
+                accountCurrency = accountCurrency,
                 accountIdToConfigure = accountId,
                 resumeAction = resumeAction
             )
         )
-        send(
+        if (accountType == "debito" && accountCurrency == null) {
+            send(chatId, "La cuenta $accountName necesita configurar su moneda.", accountCurrencyKeyboard())
+        } else send(
             chatId,
-            "La cuenta $accountName necesita configurar sus saldos. ${accountBalanceQuestion(accountType, "PEN")}"
+            "La cuenta $accountName necesita configurar sus saldos. ${
+                accountBalanceQuestion(
+                    accountType,
+                    accountCurrency ?: "PEN"
+                )
+            }"
         )
     }
 
     private fun showAccountConfirmation(chatId: Long, state: ConversationState) {
         state.step = ConversationStep.ACCOUNT_CONFIRMING
         val balanceLabel = if (state.accountType == "credito") "Deuda actual" else "Saldo actual"
+        val balances = if (state.accountType == "debito") {
+            val currency = requireNotNull(state.accountCurrency)
+            "$balanceLabel $currency: ${
+                Money.format(
+                    requireNotNull(if (currency == "PEN") state.accountBalancePen else state.accountBalanceUsd),
+                    currency
+                )
+            }"
+        } else "$balanceLabel PEN: ${
+            Money.format(
+                requireNotNull(state.accountBalancePen),
+                "PEN"
+            )
+        }\n$balanceLabel USD: ${Money.format(requireNotNull(state.accountBalanceUsd), "USD")}"
         send(
             chatId,
-            "Cuenta: ${state.accountName}\nTipo: ${state.accountType}\n$balanceLabel PEN: ${
-                Money.format(requireNotNull(state.accountBalancePen), "PEN")
-            }\n$balanceLabel USD: ${
-                Money.format(requireNotNull(state.accountBalanceUsd), "USD")
-            }\n\n¿Confirmas estos saldos?",
+            "Cuenta: ${state.accountName}\nTipo: ${state.accountType}\n$balances\n\n¿Confirmas estos saldos?",
             keyboard(
                 listOf(
                     listOf(button("✅ Confirmar", "account-confirm")),
@@ -187,6 +213,7 @@ class TelegramBotService(
                 user,
                 requireNotNull(state.accountName),
                 requireNotNull(state.accountType),
+                state.accountCurrency,
                 balancePen,
                 balanceUsd
             )
@@ -195,7 +222,7 @@ class TelegramBotService(
             return
         }
 
-        finance.configureAccountBalances(user, existingAccountId, balancePen, balanceUsd)
+        finance.configureAccountBalances(user, existingAccountId, state.accountCurrency, balancePen, balanceUsd)
         send(chatId, "✅ Saldos configurados para ${state.accountName}.")
         val nextPending = finance.pendingBalanceAccounts(user).firstOrNull()
         if (nextPending != null) {
@@ -204,6 +231,7 @@ class TelegramBotService(
                 requireNotNull(nextPending.id),
                 nextPending.nombre,
                 nextPending.tipo,
+                nextPending.moneda,
                 requireNotNull(state.resumeAction)
             )
             return
@@ -228,6 +256,16 @@ class TelegramBotService(
         return "¿Cuál es la $concept en $currencyName? Puedes escribir 0."
     }
 
+    private fun balanceStep(currency: String?): ConversationStep =
+        if (currency == "USD") ConversationStep.ACCOUNT_BALANCE_USD else ConversationStep.ACCOUNT_BALANCE_PEN
+
+    private fun accountCurrencyKeyboard(): InlineKeyboardMarkup = keyboard(
+        listOf(
+            listOf(button("🇵🇪 Soles (PEN)", "account-currency:PEN")),
+            listOf(button("🇺🇸 Dólares (USD)", "account-currency:USD"))
+        )
+    )
+
     private fun listAccounts(chatId: Long, user: Usuario) {
         val accounts = finance.activeAccounts(user)
         send(
@@ -236,7 +274,7 @@ class TelegramBotService(
                 "\n",
                 "Tus cuentas:\n"
             ) {
-                "• ${it.nombre} (${it.tipo})${if (it.hasConfiguredBalances()) "" else " — saldo pendiente"}"
+                "• ${it.nombre} (${it.tipo}${it.moneda?.let { currency -> " $currency" } ?: ""})${if (it.hasConfiguredBalances()) "" else " — saldo pendiente"}"
             })
     }
 
@@ -312,8 +350,21 @@ class TelegramBotService(
         when {
             data.startsWith("account-type:") && state.step == ConversationStep.ACCOUNT_TYPE -> {
                 state.accountType = data.removePrefix("account-type:")
-                state.step = ConversationStep.ACCOUNT_BALANCE_PEN
-                send(chatId, accountBalanceQuestion(state.accountType, "PEN"))
+                if (state.accountType == "debito") {
+                    state.step = ConversationStep.SELECTING_ACCOUNT_CURRENCY
+                    send(chatId, "Elige la moneda de esta cuenta de débito.", accountCurrencyKeyboard())
+                } else {
+                    state.step = ConversationStep.ACCOUNT_BALANCE_PEN
+                    send(chatId, accountBalanceQuestion(state.accountType, "PEN"))
+                }
+            }
+
+            data.startsWith("account-currency:") && state.step == ConversationStep.SELECTING_ACCOUNT_CURRENCY -> {
+                data.removePrefix("account-currency:").takeIf { it in setOf("PEN", "USD") }?.let { currency ->
+                    state.accountCurrency = currency
+                    state.step = balanceStep(currency)
+                    send(chatId, accountBalanceQuestion(state.accountType, currency))
+                } ?: send(chatId, "Elige una moneda válida.")
             }
 
             data == "account-confirm" && state.step == ConversationStep.ACCOUNT_CONFIRMING ->
@@ -322,8 +373,14 @@ class TelegramBotService(
             data == "account-balances-retry" && state.step == ConversationStep.ACCOUNT_CONFIRMING -> {
                 state.accountBalancePen = null
                 state.accountBalanceUsd = null
-                state.step = ConversationStep.ACCOUNT_BALANCE_PEN
-                send(chatId, "Vamos a corregirlos. ${accountBalanceQuestion(state.accountType, "PEN")}")
+                state.step =
+                    if (state.accountType == "debito") ConversationStep.SELECTING_ACCOUNT_CURRENCY else ConversationStep.ACCOUNT_BALANCE_PEN
+                if (state.accountType == "debito") send(
+                    chatId,
+                    "Vamos a corregirla. Elige nuevamente la moneda.",
+                    accountCurrencyKeyboard()
+                )
+                else send(chatId, "Vamos a corregirlos. ${accountBalanceQuestion(state.accountType, "PEN")}")
             }
 
             data.startsWith("type:") && state.step == ConversationStep.SELECTING_TYPE -> {
@@ -351,6 +408,23 @@ class TelegramBotService(
                     user,
                     state
                 )
+            }
+
+            data.startsWith("payment-source:") && state.step == ConversationStep.SELECTING_PAYMENT_SOURCE -> {
+                finance.account(data.removePrefix("payment-source:").toLongOrNull() ?: -1, user)?.takeIf {
+                    it.tipo == "debito" && it.hasConfiguredBalances()
+                }?.let { sourceAccount ->
+                    state.draft.paymentSourceAccountId = sourceAccount.id
+                    state.draft.paymentCurrency = sourceAccount.moneda
+                    chooseDebtCurrency(chatId, state)
+                } ?: send(chatId, "Esa cuenta de origen no está disponible. Elige otra.")
+            }
+
+            data.startsWith("payment-debt-currency:") && state.step == ConversationStep.SELECTING_DEBT_CURRENCY -> {
+                data.removePrefix("payment-debt-currency:").takeIf { it in setOf("PEN", "USD") }?.let { currency ->
+                    state.draft.currency = currency
+                    continueCreditPayment(chatId, user, state)
+                } ?: send(chatId, "Elige una moneda de deuda válida.")
             }
 
             data.startsWith("category:") && state.step == ConversationStep.SELECTING_CATEGORY -> {
@@ -431,23 +505,46 @@ class TelegramBotService(
 
             ConversationStep.ACCOUNT_BALANCE_PEN -> Money.parseNonNegative(input)?.let {
                 state.accountBalancePen = it
-                state.step = ConversationStep.ACCOUNT_BALANCE_USD
-                send(chatId, accountBalanceQuestion(state.accountType, "USD"))
+                if (state.accountType == "debito") {
+                    state.accountBalanceUsd = BigDecimal.ZERO
+                    showAccountConfirmation(chatId, state)
+                } else {
+                    state.step = ConversationStep.ACCOUNT_BALANCE_USD
+                    send(chatId, accountBalanceQuestion(state.accountType, "USD"))
+                }
             } ?: send(chatId, balanceValidationMessage())
 
             ConversationStep.ACCOUNT_BALANCE_USD -> Money.parseNonNegative(input)?.let {
                 state.accountBalanceUsd = it
+                if (state.accountType == "debito") state.accountBalancePen = BigDecimal.ZERO
                 showAccountConfirmation(chatId, state)
             } ?: send(chatId, balanceValidationMessage())
 
             ConversationStep.EXPECTING_AMOUNT -> Money.parse(input)?.let {
                 state.draft.amount = it
                 if (state.editingField == "amount") finishEdit(chatId, user, state)
-                else {
-                    state.step = ConversationStep.SELECTING_CURRENCY; askCurrency(chatId)
-                }
+                else continueAfterAmount(chatId, user, state)
             }
                 ?: send(chatId, "Monto inválido. Ingresa un número positivo con hasta dos decimales.")
+
+            ConversationStep.EXPECTING_PAYMENT_AMOUNT -> Money.parse(input)?.let {
+                state.draft.paymentAmount = it
+                continueCreditPayment(chatId, user, state)
+            } ?: send(chatId, "Monto inválido. Ingresa un número positivo con hasta dos decimales.")
+
+            ConversationStep.EXPECTING_EXCHANGE_RATE -> Money.parseExchangeRate(input)?.let {
+                state.draft.exchangeRate = it
+                state.draft.amount = calculateAppliedPayment(
+                    requireNotNull(state.draft.paymentAmount),
+                    requireNotNull(state.draft.paymentCurrency),
+                    state.draft.currency,
+                    it
+                )
+                chooseCategory(chatId, user, state)
+            } ?: send(
+                chatId,
+                "Tipo de cambio inválido. Usa un número positivo con hasta seis decimales, por ejemplo 3.750000."
+            )
 
             ConversationStep.EXPECTING_CATEGORY_NAME -> {
                 state.draft.categoryId = finance.categoryByNameOrCreate(user, input).id
@@ -507,10 +604,78 @@ class TelegramBotService(
     }
 
     private fun continueAfterAccount(chatId: Long, user: Usuario, state: ConversationState) {
-        if (nextStepAfterAccount(state.draft) == ConversationStep.EXPECTING_AMOUNT) {
+        val account = state.draft.accountId?.let { finance.account(it, user) } ?: return
+        if (account.tipo == "debito") {
+            state.draft.currency = requireNotNull(account.moneda)
+            if (state.draft.amount == null) askAmount(chatId, state) else chooseCategory(chatId, user, state)
+        } else if (state.draft.type == "abono") {
+            if (state.draft.paymentAmount == null && state.draft.amount != null) {
+                state.draft.paymentAmount = state.draft.amount
+                state.draft.amount = null
+            }
+            choosePaymentSource(chatId, user, state)
+        } else if (nextStepAfterAccount(state.draft) == ConversationStep.EXPECTING_AMOUNT) {
             askAmount(chatId, state)
         } else {
             chooseCategory(chatId, user, state)
+        }
+    }
+
+    private fun continueAfterAmount(chatId: Long, user: Usuario, state: ConversationState) {
+        val account = state.draft.accountId?.let { finance.account(it, user) } ?: return
+        if (account.tipo == "debito") {
+            state.draft.currency = requireNotNull(account.moneda)
+            chooseCategory(chatId, user, state)
+        } else {
+            state.step = ConversationStep.SELECTING_CURRENCY
+            askCurrency(chatId)
+        }
+    }
+
+    private fun choosePaymentSource(chatId: Long, user: Usuario, state: ConversationState) {
+        val sources = finance.activeDebitAccounts(user)
+        if (sources.isEmpty()) {
+            states.clear(chatId)
+            send(chatId, "Necesitas una cuenta de débito configurada para pagar la tarjeta. Usa /cuenta_nueva.")
+            return
+        }
+        state.step = ConversationStep.SELECTING_PAYMENT_SOURCE
+        send(
+            chatId,
+            "Elige la cuenta de débito desde la que pagarás.",
+            keyboard(sources.map { listOf(button("${it.nombre} (${it.moneda})", "payment-source:${it.id}")) })
+        )
+    }
+
+    private fun chooseDebtCurrency(chatId: Long, state: ConversationState) {
+        state.step = ConversationStep.SELECTING_DEBT_CURRENCY
+        send(
+            chatId,
+            "¿En qué moneda deseas reducir la deuda?",
+            keyboard(
+                listOf(
+                    listOf(button("🇵🇪 Deuda en PEN", "payment-debt-currency:PEN")),
+                    listOf(button("🇺🇸 Deuda en USD", "payment-debt-currency:USD"))
+                )
+            )
+        )
+    }
+
+    private fun continueCreditPayment(chatId: Long, user: Usuario, state: ConversationState) {
+        val paymentAmount = state.draft.paymentAmount
+        if (paymentAmount == null) {
+            state.step = ConversationStep.EXPECTING_PAYMENT_AMOUNT
+            send(chatId, "¿Cuál es el monto que pagarás desde la cuenta de débito?")
+            return
+        }
+        val paidCurrency = requireNotNull(state.draft.paymentCurrency)
+        if (paidCurrency == state.draft.currency) {
+            state.draft.exchangeRate = null
+            state.draft.amount = paymentAmount
+            chooseCategory(chatId, user, state)
+        } else {
+            state.step = ConversationStep.EXPECTING_EXCHANGE_RATE
+            send(chatId, "Indica el tipo de cambio: 1 USD = S/ X.")
         }
     }
 
@@ -559,6 +724,31 @@ class TelegramBotService(
         val account = state.draft.accountId?.let { finance.account(it, user)?.nombre } ?: "Sin cuenta"
         val category = state.draft.categoryId?.let { finance.category(it, user)?.nombre } ?: "Sin categoría"
         val description = state.draft.description ?: "Sin descripción"
+        val paymentDetails = if (state.draft.paymentSourceAccountId != null) {
+            val source =
+                finance.account(requireNotNull(state.draft.paymentSourceAccountId), user)?.nombre ?: "Sin cuenta"
+            "\nPagado desde: $source\nMonto pagado: ${
+                Money.format(
+                    requireNotNull(state.draft.paymentAmount),
+                    requireNotNull(state.draft.paymentCurrency)
+                )
+            }" +
+                    "\nDeuda reducida: ${Money.format(requireNotNull(state.draft.amount), state.draft.currency)}" +
+                    (state.draft.exchangeRate?.let {
+                        "\nTipo de cambio: 1 USD = S/ ${
+                            it.stripTrailingZeros().toPlainString()
+                        }"
+                    } ?: "")
+        } else ""
+        val confirmationButtons = if (state.draft.paymentSourceAccountId == null) {
+            listOf(
+                listOf(button("✅ Confirmar", "confirm"), button("✏️ Editar", "edit")),
+                listOf(button("❌ Cancelar", "cancel"))
+            )
+        } else listOf(
+            listOf(button("✅ Confirmar", "confirm")),
+            listOf(button("❌ Cancelar y registrar de nuevo", "cancel"))
+        )
         send(
             chatId,
             "Resumen:\nTipo: ${state.draft.type}\nCuenta: $account\nMonto: ${
@@ -566,15 +756,10 @@ class TelegramBotService(
                     requireNotNull(state.draft.amount),
                     state.draft.currency
                 )
-            }\nCategoría: $category\nDescripción: $description\nOrigen: ${state.draft.source}\nFecha: ${
+            }$paymentDetails\nCategoría: $category\nDescripción: $description\nOrigen: ${state.draft.source}\nFecha: ${
                 formatDisplayDate(state.draft.date)
             }\n\n¿Confirmas?",
-            keyboard(
-                listOf(
-                    listOf(button("✅ Confirmar", "confirm"), button("✏️ Editar", "edit")),
-                    listOf(button("❌ Cancelar", "cancel"))
-                )
-            )
+            keyboard(confirmationButtons)
         )
     }
 
@@ -774,6 +959,12 @@ internal fun formatAccountSummary(summary: AccountSummary): String = buildString
         }
         append("\n$label: ${Money.format(currency.currentBalance.abs(), currency.currency)}")
     }
+    if (summary.accountType == "credito" && summary.paymentTotals.isNotEmpty()) {
+        append("\n\nPagos realizados desde débito:")
+        summary.paymentTotals.forEach { payment ->
+            append("\n• ${Money.format(payment.amount, payment.currency)}")
+        }
+    }
 }
 
 internal fun formatCategorySummary(summary: AccountCategorySummary): String = buildString {
@@ -793,6 +984,21 @@ internal fun formatCategorySummary(summary: AccountCategorySummary): String = bu
             append("\n• ${entry.category}")
             append("\n  Abonos: ${Money.format(entry.income, currency)}")
             append("\n  Retiros: ${Money.format(entry.expenses, currency)}")
+        }
+    }
+    if (summary.creditPayments.isNotEmpty()) {
+        append("\n\nPagos de tarjeta:")
+        summary.creditPayments.forEach { payment ->
+            append(
+                "\n• ${payment.category}: ${
+                    Money.format(
+                        payment.paidAmount,
+                        payment.paidCurrency
+                    )
+                } desde ${payment.sourceAccountName ?: "cuenta de débito"}"
+            )
+            append(" → aplica ${Money.format(payment.appliedAmount, payment.debtCurrency)}")
+            payment.exchangeRate?.let { append(" (1 USD = S/ ${it.stripTrailingZeros().toPlainString()})") }
         }
     }
 }

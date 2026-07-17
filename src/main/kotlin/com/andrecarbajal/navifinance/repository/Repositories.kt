@@ -19,7 +19,10 @@ class CuentaRepository : PanacheRepository<Cuenta> {
         find("id = ?1 and usuario = ?2 and activo = true", id, usuario).firstResult()
 
     fun pendingBalancesFor(usuario: Usuario): List<Cuenta> =
-        list("usuario = ?1 and activo = true and saldoConfiguradoEn is null order by nombre", usuario)
+        list(
+            "usuario = ?1 and activo = true and (saldoConfiguradoEn is null or (tipo = 'debito' and moneda is null)) order by nombre",
+            usuario
+        )
 }
 
 @ApplicationScoped

@@ -5,20 +5,25 @@ import jakarta.persistence.*
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.util.*
 
 @Entity
 @Table(name = "transacciones")
 class Transaccion : PanacheEntityBase {
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long? = null
 
-    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "usuario_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "usuario_id", nullable = false)
     lateinit var usuario: Usuario
 
-    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "cuenta_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "cuenta_id", nullable = false)
     lateinit var cuenta: Cuenta
 
-    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "categoria_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "categoria_id", nullable = false)
     lateinit var categoria: Categoria
 
     @Column(nullable = false)
@@ -29,6 +34,18 @@ class Transaccion : PanacheEntityBase {
 
     @Column(nullable = false, length = 3)
     var moneda: String = "PEN"
+
+    @Column(name = "monto_pagado", precision = 12, scale = 2)
+    var montoPagado: BigDecimal? = null
+
+    @Column(name = "moneda_pagada", length = 3)
+    var monedaPagada: String? = null
+
+    @Column(name = "tasa_cambio", precision = 12, scale = 6)
+    var tasaCambio: BigDecimal? = null
+
+    @Column(name = "operacion_id")
+    var operacionId: UUID? = null
 
     var descripcion: String? = null
 

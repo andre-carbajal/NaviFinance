@@ -25,6 +25,12 @@ class MoneyTest {
     }
 
     @Test
+    fun `parses PEN per USD exchange rates with up to six decimals`() {
+        assertEquals(BigDecimal("3.750000"), Money.parseExchangeRate("3,75"))
+        listOf("0", "-3.75", "3.1234567", "abc").forEach { assertNull(Money.parseExchangeRate(it)) }
+    }
+
+    @Test
     fun `formats supported currencies`() {
         assertEquals("S/ 10.00", Money.format(BigDecimal.TEN, "PEN"))
         assertEquals("US$ 10.00", Money.format(BigDecimal.TEN, "USD"))

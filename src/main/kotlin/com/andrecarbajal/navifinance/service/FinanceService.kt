@@ -15,6 +15,7 @@ import java.math.RoundingMode
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.YearMonth
+import java.util.*
 
 data class AccountCurrencySummary(
     val currency: String,
@@ -28,8 +29,11 @@ data class AccountSummary(
     val accountName: String,
     val accountType: String,
     val month: YearMonth,
-    val currencies: List<AccountCurrencySummary>
+    val currencies: List<AccountCurrencySummary>,
+    val paymentTotals: List<PaymentCurrencySummary> = emptyList()
 )
+
+data class PaymentCurrencySummary(val currency: String, val amount: BigDecimal)
 
 data class CategoryCurrencySummary(
     val category: String,
@@ -42,7 +46,18 @@ data class AccountCategorySummary(
     val accountId: Long,
     val accountName: String,
     val month: YearMonth,
-    val entries: List<CategoryCurrencySummary>
+    val entries: List<CategoryCurrencySummary>,
+    val creditPayments: List<CreditPaymentDetail> = emptyList()
+)
+
+data class CreditPaymentDetail(
+    val category: String,
+    val appliedAmount: BigDecimal,
+    val debtCurrency: String,
+    val paidAmount: BigDecimal,
+    val paidCurrency: String,
+    val exchangeRate: BigDecimal?,
+    val sourceAccountName: String?
 )
 
 @ApplicationScoped
@@ -74,6 +89,9 @@ class FinanceService(
     }
 
     fun activeAccounts(user: Usuario): List<Cuenta> = cuentas.activeFor(user)
+    fun activeDebitAccounts(user: Usuario): List<Cuenta> =
+        cuentas.activeFor(user).filter { it.tipo == "debito" && it.hasConfiguredBalances() }
+
     fun pendingBalanceAccounts(user: Usuario): List<Cuenta> = cuentas.pendingBalancesFor(user)
     fun categories(user: Usuario): List<Categoria> = categorias.forUser(user)
     fun account(id: Long, user: Usuario): Cuenta? = cuentas.belongsTo(id, user)
@@ -84,15 +102,17 @@ class FinanceService(
         user: Usuario,
         name: String,
         type: String,
+        accountCurrency: String?,
         balancePen: BigDecimal,
         balanceUsd: BigDecimal
     ): Cuenta {
-        require(type in setOf("debito", "credito"))
+        validateAccountConfiguration(type, accountCurrency)
         val configuredAt = LocalDateTime.now()
         return Cuenta().also { account ->
             account.usuario = user
             account.nombre = name.trim()
             account.tipo = type
+            account.moneda = accountCurrency
             account.saldoBasePen = normalizedBalance(balancePen)
             account.saldoBaseUsd = normalizedBalance(balanceUsd)
             account.saldoConfiguradoEn = configuredAt
@@ -104,11 +124,14 @@ class FinanceService(
     fun configureAccountBalances(
         user: Usuario,
         accountId: Long,
+        accountCurrency: String?,
         balancePen: BigDecimal,
         balanceUsd: BigDecimal
     ): Cuenta {
         val account = requireNotNull(account(accountId, user))
         require(!account.hasConfiguredBalances())
+        validateAccountConfiguration(account.tipo, accountCurrency)
+        account.moneda = accountCurrency
         account.saldoBasePen = normalizedBalance(balancePen)
         account.saldoBaseUsd = normalizedBalance(balanceUsd)
         account.saldoConfiguradoEn = LocalDateTime.now()
@@ -131,22 +154,17 @@ class FinanceService(
         val account = requireNotNull(account(requireNotNull(draft.accountId), user))
         require(account.hasConfiguredBalances())
         val category = requireNotNull(category(requireNotNull(draft.categoryId), user))
-        val amount = requireNotNull(draft.amount)
-        require(amount > BigDecimal.ZERO)
         require(draft.type in setOf("retiro", "abono"))
         require(draft.currency in setOf("PEN", "USD"))
         require(draft.source.isNotBlank())
-        return Transaccion().also { transaction ->
-            transaction.usuario = user
-            transaction.cuenta = account
-            transaction.categoria = category
-            transaction.tipo = requireNotNull(draft.type)
-            transaction.monto = amount
-            transaction.moneda = draft.currency
-            transaction.descripcion = draft.description?.takeIf(String::isNotBlank)?.take(240)
-            transaction.origen = draft.source.take(40)
-            transaction.fecha = draft.date
-            transacciones.persist(transaction)
+        return if (account.tipo == "credito" && draft.type == "abono") {
+            saveCreditPayment(user, account, category, draft)
+        } else {
+            if (account.tipo == "debito") require(draft.currency == account.moneda)
+            persistTransaction(
+                user, account, category, requireNotNull(draft.type), normalizedAmount(requireNotNull(draft.amount)),
+                draft.currency, draft.description, draft.source, draft.date
+            )
         }
     }
 
@@ -166,13 +184,89 @@ class FinanceService(
     ): AccountCategorySummary? {
         val account = account(accountId, user) ?: return null
         val rows = transacciones.forPeriod(user, month.atDay(1), month.atEndOfMonth())
-            .filter { it.cuenta.id == accountId }
         return summarizeCategories(account, rows, month)
     }
 
     private fun normalizedBalance(balance: BigDecimal): BigDecimal {
         require(balance >= BigDecimal.ZERO && balance <= MAX_BALANCE)
         return balance.setScale(2, RoundingMode.UNNECESSARY)
+    }
+
+    private fun normalizedAmount(amount: BigDecimal): BigDecimal {
+        require(amount > BigDecimal.ZERO && amount <= MAX_BALANCE)
+        return amount.setScale(2, RoundingMode.UNNECESSARY)
+    }
+
+    private fun validateAccountConfiguration(type: String, accountCurrency: String?) {
+        require(type in setOf("debito", "credito"))
+        require(
+            (type == "debito" && accountCurrency in setOf(
+                "PEN",
+                "USD"
+            )) || (type == "credito" && accountCurrency == null)
+        )
+    }
+
+    private fun saveCreditPayment(
+        user: Usuario,
+        creditAccount: Cuenta,
+        category: Categoria,
+        draft: TransactionDraft
+    ): Transaccion {
+        val sourceAccount = requireNotNull(account(requireNotNull(draft.paymentSourceAccountId), user))
+        require(sourceAccount.id != creditAccount.id)
+        require(sourceAccount.tipo == "debito" && sourceAccount.hasConfiguredBalances())
+        val paidCurrency = requireNotNull(sourceAccount.moneda)
+        require(draft.paymentCurrency == paidCurrency)
+        val paidAmount = normalizedAmount(requireNotNull(draft.paymentAmount))
+        val exchangeRate = draft.exchangeRate?.let(::normalizedExchangeRate)
+        val appliedAmount = calculateAppliedPayment(paidAmount, paidCurrency, draft.currency, exchangeRate)
+        val operationId = UUID.randomUUID()
+        val creditTransaction = persistTransaction(
+            user, creditAccount, category, "abono", appliedAmount, draft.currency, draft.description, draft.source,
+            draft.date, paidAmount, paidCurrency, exchangeRate, operationId
+        )
+        persistTransaction(
+            user, sourceAccount, category, "retiro", paidAmount, paidCurrency, draft.description,
+            "pago_tarjeta", draft.date, operationId = operationId
+        )
+        return creditTransaction
+    }
+
+    private fun persistTransaction(
+        user: Usuario,
+        account: Cuenta,
+        category: Categoria,
+        type: String,
+        amount: BigDecimal,
+        currency: String,
+        description: String?,
+        source: String,
+        date: LocalDate,
+        paidAmount: BigDecimal? = null,
+        paidCurrency: String? = null,
+        exchangeRate: BigDecimal? = null,
+        operationId: UUID? = null
+    ): Transaccion = Transaccion().also { transaction ->
+        transaction.usuario = user
+        transaction.cuenta = account
+        transaction.categoria = category
+        transaction.tipo = type
+        transaction.monto = amount
+        transaction.moneda = currency
+        transaction.montoPagado = paidAmount
+        transaction.monedaPagada = paidCurrency
+        transaction.tasaCambio = exchangeRate
+        transaction.operacionId = operationId
+        transaction.descripcion = description?.takeIf(String::isNotBlank)?.take(240)
+        transaction.origen = source.take(40)
+        transaction.fecha = date
+        transacciones.persist(transaction)
+    }
+
+    private fun normalizedExchangeRate(exchangeRate: BigDecimal): BigDecimal {
+        require(exchangeRate > BigDecimal.ZERO && exchangeRate <= BigDecimal("999999.999999"))
+        return exchangeRate.setScale(6, RoundingMode.UNNECESSARY)
     }
 }
 
@@ -185,6 +279,26 @@ internal fun calculateCurrentBalance(
     "debito" -> baseBalance + income - expenses
     "credito" -> baseBalance + expenses - income
     else -> error("Unsupported account type: $accountType")
+}
+
+internal fun calculateAppliedPayment(
+    paidAmount: BigDecimal,
+    paidCurrency: String,
+    debtCurrency: String,
+    exchangeRate: BigDecimal?
+): BigDecimal {
+    require(paidCurrency in setOf("PEN", "USD") && debtCurrency in setOf("PEN", "USD"))
+    val converted = when {
+        paidCurrency == debtCurrency -> {
+            require(exchangeRate == null)
+            paidAmount
+        }
+
+        paidCurrency == "PEN" -> paidAmount.divide(requireNotNull(exchangeRate), 2, RoundingMode.HALF_UP)
+        else -> paidAmount.multiply(requireNotNull(exchangeRate)).setScale(2, RoundingMode.HALF_UP)
+    }
+    require(converted > BigDecimal.ZERO && converted <= BigDecimal("9999999999.99"))
+    return converted
 }
 
 internal fun summarizeAccounts(
@@ -200,7 +314,10 @@ internal fun summarizeAccounts(
         accountName = account.nombre,
         accountType = account.tipo,
         month = month,
-        currencies = listOf("PEN", "USD").map { currency ->
+        currencies = (if (account.tipo == "debito") listOf(requireNotNull(account.moneda)) else listOf(
+            "PEN",
+            "USD"
+        )).map { currency ->
             val monthly = monthlyRows.filter { it.cuenta.id == accountId && it.moneda == currency }
             val afterSnapshot = balanceRows.filter {
                 it.cuenta.id == accountId && it.moneda == currency && it.creadoEn.isAfter(snapshotAt)
@@ -220,7 +337,17 @@ internal fun summarizeAccounts(
                     afterSnapshot.totalFor("retiro")
                 )
             )
-        }
+        },
+        paymentTotals = if (account.tipo == "credito") {
+            monthlyRows.filter { it.cuenta.id == accountId && it.tipo == "abono" && it.montoPagado != null }
+                .groupBy { requireNotNull(it.monedaPagada) }
+                .map { (currency, values) ->
+                    PaymentCurrencySummary(
+                        currency,
+                        values.sumOf { requireNotNull(it.montoPagado) })
+                }
+                .sortedBy { it.currency }
+        } else emptyList()
     )
 }.sortedBy { it.accountName.lowercase() }
 
@@ -232,7 +359,7 @@ internal fun summarizeCategories(
     accountId = requireNotNull(account.id),
     accountName = account.nombre,
     month = month,
-    entries = rows.groupBy { it.categoria.nombre to it.moneda }
+    entries = rows.filter { it.cuenta.id == account.id }.groupBy { it.categoria.nombre to it.moneda }
         .map { (key, values) ->
             CategoryCurrencySummary(
                 category = key.first,
@@ -241,7 +368,22 @@ internal fun summarizeCategories(
                 expenses = values.totalFor("retiro")
             )
         }
-        .sortedWith(compareBy<CategoryCurrencySummary> { it.currency }.thenBy { it.category.lowercase() })
+        .sortedWith(compareBy<CategoryCurrencySummary> { it.currency }.thenBy { it.category.lowercase() }),
+    creditPayments = if (account.tipo == "credito") {
+        rows.filter { it.cuenta.id == account.id && it.tipo == "abono" && it.montoPagado != null }.map { payment ->
+            CreditPaymentDetail(
+                category = payment.categoria.nombre,
+                appliedAmount = payment.monto,
+                debtCurrency = payment.moneda,
+                paidAmount = requireNotNull(payment.montoPagado),
+                paidCurrency = requireNotNull(payment.monedaPagada),
+                exchangeRate = payment.tasaCambio,
+                sourceAccountName = payment.operacionId?.let { operationId ->
+                    rows.firstOrNull { it.operacionId == operationId && it.cuenta.id != account.id }?.cuenta?.nombre
+                }
+            )
+        }
+    } else emptyList()
 )
 
 private fun List<Transaccion>.totalFor(type: String): BigDecimal =
@@ -252,6 +394,10 @@ data class TransactionDraft(
     var accountId: Long? = null,
     var amount: BigDecimal? = null,
     var currency: String = "PEN",
+    var paymentSourceAccountId: Long? = null,
+    var paymentAmount: BigDecimal? = null,
+    var paymentCurrency: String? = null,
+    var exchangeRate: BigDecimal? = null,
     var categoryId: Long? = null,
     var description: String? = null,
     var source: String = "manual",

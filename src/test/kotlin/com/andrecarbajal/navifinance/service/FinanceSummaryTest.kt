@@ -27,7 +27,7 @@ class FinanceSummaryTest {
     @Test
     fun `summary separates currencies and only post snapshot creations affect current balance`() {
         val snapshot = LocalDateTime.of(2026, 7, 16, 10, 0)
-        val account = account(1, "BCP", "debito", "1000", "50", snapshot)
+        val account = account(1, "Visa", "credito", "1000", "50", snapshot)
         val oldWithdrawal = transaction(account, "Comida", "retiro", "100", "PEN", snapshot.minusDays(1))
         val backdatedNewDeposit = transaction(account, "Otros", "abono", "25", "PEN", snapshot.plusHours(1))
             .also { it.fecha = LocalDate.of(2026, 7, 1) }
@@ -42,8 +42,8 @@ class FinanceSummaryTest {
 
         assertEquals(bd("25"), result.currencies.single { it.currency == "PEN" }.income)
         assertEquals(bd("100"), result.currencies.single { it.currency == "PEN" }.expenses)
-        assertEquals(bd("1025"), result.currencies.single { it.currency == "PEN" }.currentBalance)
-        assertEquals(bd("40"), result.currencies.single { it.currency == "USD" }.currentBalance)
+        assertEquals(bd("975"), result.currencies.single { it.currency == "PEN" }.currentBalance)
+        assertEquals(bd("60"), result.currencies.single { it.currency == "USD" }.currentBalance)
     }
 
     @Test
@@ -63,6 +63,27 @@ class FinanceSummaryTest {
         assertEquals(bd("8"), entries.single { it.currency == "USD" }.expenses)
     }
 
+    @Test
+    fun `cross currency card payments use the stored PEN per USD exchange rate`() {
+        assertEquals(
+            bd("100"),
+            calculateAppliedPayment(bd("375"), "PEN", "USD", BigDecimal("3.750000"))
+        )
+        assertEquals(
+            bd("375"),
+            calculateAppliedPayment(bd("100"), "USD", "PEN", BigDecimal("3.750000"))
+        )
+        assertEquals(bd("50"), calculateAppliedPayment(bd("50"), "PEN", "PEN", null))
+    }
+
+    @Test
+    fun `debit summaries only expose the account configured currency`() {
+        val account = account(1, "Yape", "debito", "40", "0", LocalDateTime.of(2026, 7, 1, 0, 0))
+        val summary = summarizeAccounts(listOf(account), emptyList(), emptyList(), YearMonth.of(2026, 7)).single()
+
+        assertEquals(listOf("PEN"), summary.currencies.map { it.currency })
+    }
+
     private fun account(
         id: Long,
         name: String,
@@ -75,6 +96,7 @@ class FinanceSummaryTest {
         it.usuario = Usuario()
         it.nombre = name
         it.tipo = type
+        it.moneda = if (type == "debito") "PEN" else null
         it.saldoBasePen = bd(pen)
         it.saldoBaseUsd = bd(usd)
         it.saldoConfiguradoEn = snapshot
