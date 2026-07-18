@@ -22,26 +22,20 @@ jobs:
         with:
           java-version: '25'
           distribution: 'temurin'
-          cache: 'gradle'
+          cache: 'maven'
 
-      - name: Make Gradlew executable
-        run: chmod +x gradlew
-
-      - name: Set Environment Variables from Gradle
-        run: ./gradlew printEnv
-
-      - name: Build with Gradle
-        run: ./gradlew build -x test
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ env.VERSION }}
-          name: NaviDiscounts ${{ env.VERSION }}
+          tag_name: ${{ github.ref_name }}
+          name: NaviFinance ${{ github.ref_name }}
           body_path: ./RELEASE_NOTES.md
           draft: false
           prerelease: false
-          files: ./build/libs/NaviDiscounts-${{ env.VERSION }}.jar
+          files: ./target/quarkus-app/quarkus-run.jar
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
