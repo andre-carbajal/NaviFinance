@@ -24,8 +24,24 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Build with Maven
-        run: mvn clean package -DskipTests
+      - name: Read and validate release version
+        run: |
+          VERSION=$(bash ./mvnw --batch-mode help:evaluate -Dexpression=project.version -q -DforceStdout)
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "Release tag '$GITHUB_REF_NAME' must match Maven version 'v$VERSION'."
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Build release JAR with Maven
+        run: bash ./mvnw --batch-mode clean package -DskipTests -Dquarkus.package.jar.type=uber-jar
+
+      - name: Prepare release asset
+        run: |
+          SOURCE="target/navifinance-${VERSION}-runner.jar"
+          TARGET="target/NaviFinance-${VERSION}.jar"
+          test -f "$SOURCE"
+          mv "$SOURCE" "$TARGET"
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -35,7 +51,7 @@ jobs:
           body_path: ./CHANGELOG.md
           draft: false
           prerelease: false
-          files: ./target/quarkus-app/quarkus-run.jar
+          files: ./target/NaviFinance-${{ env.VERSION }}.jar
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
