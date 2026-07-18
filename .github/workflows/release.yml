@@ -32,7 +32,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: NaviFinance ${{ github.ref_name }}
-          body_path: ./RELEASE_NOTES.md
+          body_path: ./CHANGELOG.md
           draft: false
           prerelease: false
           files: ./target/quarkus-app/quarkus-run.jar
