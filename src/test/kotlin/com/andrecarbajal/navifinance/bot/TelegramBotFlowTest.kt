@@ -14,9 +14,10 @@ class TelegramBotFlowTest {
         val commands = botCommands()
 
         assertEquals(
-            listOf("start", "cuenta_nueva", "cuentas", "registrar", "resumen", "cancelar"),
+            listOf("start", "cuentas", "registrar", "resumen", "cancelar"),
             commands.map { it.command }
         )
+        assertEquals(false, commands.any { it.command == "cuenta_nueva" })
         assertEquals(true, commands.all { it.description.isNotBlank() })
     }
 
@@ -74,6 +75,22 @@ class TelegramBotFlowTest {
         assertEquals(true, text.contains("Comida"))
         assertEquals(true, text.contains("Retiros: S/ 20.00"))
         assertEquals(false, text.contains("🇺🇸 USD"))
+    }
+
+    @Test
+    fun `debit category detail identifies linked card payments`() {
+        val text = formatCategorySummary(
+            AccountCategorySummary(
+                1,
+                "BCP",
+                YearMonth.of(2026, 7),
+                listOf(CategoryCurrencySummary("Otros", "PEN", BigDecimal.ZERO, BigDecimal("100.00"))),
+                debitPayments = listOf(DebitPaymentDetail("Otros", BigDecimal("100.00"), "PEN", "Visa"))
+            )
+        )
+
+        assertEquals(true, text.contains("Pagos a tarjeta"))
+        assertEquals(true, text.contains("Visa"))
     }
 
     @Test

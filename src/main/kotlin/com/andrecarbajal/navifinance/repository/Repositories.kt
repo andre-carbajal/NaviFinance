@@ -15,8 +15,12 @@ class UsuarioRepository : PanacheRepository<Usuario> {
 @ApplicationScoped
 class CuentaRepository : PanacheRepository<Cuenta> {
     fun activeFor(usuario: Usuario): List<Cuenta> = list("usuario = ?1 and activo = true order by nombre", usuario)
+    fun inactiveFor(usuario: Usuario): List<Cuenta> = list("usuario = ?1 and activo = false order by nombre", usuario)
     fun belongsTo(id: Long, usuario: Usuario): Cuenta? =
         find("id = ?1 and usuario = ?2 and activo = true", id, usuario).firstResult()
+
+    fun anyFor(id: Long, usuario: Usuario): Cuenta? =
+        find("id = ?1 and usuario = ?2", id, usuario).firstResult()
 
     fun pendingBalancesFor(usuario: Usuario): List<Cuenta> =
         list(

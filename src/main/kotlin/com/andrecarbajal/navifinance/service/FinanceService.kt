@@ -47,7 +47,8 @@ data class AccountCategorySummary(
     val accountName: String,
     val month: YearMonth,
     val entries: List<CategoryCurrencySummary>,
-    val creditPayments: List<CreditPaymentDetail> = emptyList()
+    val creditPayments: List<CreditPaymentDetail> = emptyList(),
+    val debitPayments: List<DebitPaymentDetail> = emptyList()
 )
 
 data class CreditPaymentDetail(
@@ -58,6 +59,13 @@ data class CreditPaymentDetail(
     val paidCurrency: String,
     val exchangeRate: BigDecimal?,
     val sourceAccountName: String?
+)
+
+data class DebitPaymentDetail(
+    val category: String,
+    val paidAmount: BigDecimal,
+    val paidCurrency: String,
+    val targetAccountName: String?
 )
 
 @ApplicationScoped
@@ -89,12 +97,14 @@ class FinanceService(
     }
 
     fun activeAccounts(user: Usuario): List<Cuenta> = cuentas.activeFor(user)
+    fun inactiveAccounts(user: Usuario): List<Cuenta> = cuentas.inactiveFor(user)
     fun activeDebitAccounts(user: Usuario): List<Cuenta> =
         cuentas.activeFor(user).filter { it.tipo == "debito" && it.hasConfiguredBalances() }
 
     fun pendingBalanceAccounts(user: Usuario): List<Cuenta> = cuentas.pendingBalancesFor(user)
     fun categories(user: Usuario): List<Categoria> = categorias.forUser(user)
     fun account(id: Long, user: Usuario): Cuenta? = cuentas.belongsTo(id, user)
+    fun managedAccount(id: Long, user: Usuario): Cuenta? = cuentas.anyFor(id, user)
     fun category(id: Long, user: Usuario): Categoria? = categorias.belongsTo(id, user)
 
     @Transactional
@@ -135,6 +145,32 @@ class FinanceService(
         account.saldoBasePen = normalizedBalance(balancePen)
         account.saldoBaseUsd = normalizedBalance(balanceUsd)
         account.saldoConfiguradoEn = LocalDateTime.now()
+        return account
+    }
+
+    @Transactional
+    fun renameAccount(user: Usuario, accountId: Long, name: String): Cuenta {
+        val account = requireNotNull(managedAccount(accountId, user))
+        val cleaned = name.trim().take(80)
+        require(cleaned.isNotBlank())
+        account.nombre = cleaned
+        return account
+    }
+
+    @Transactional
+    fun adjustAccountBalances(user: Usuario, accountId: Long, balancePen: BigDecimal, balanceUsd: BigDecimal): Cuenta {
+        val account = requireNotNull(managedAccount(accountId, user))
+        require(account.hasConfiguredBalances())
+        account.saldoBasePen = normalizedBalance(balancePen)
+        account.saldoBaseUsd = normalizedBalance(balanceUsd)
+        account.saldoConfiguradoEn = LocalDateTime.now()
+        return account
+    }
+
+    @Transactional
+    fun setAccountActive(user: Usuario, accountId: Long, active: Boolean): Cuenta {
+        val account = requireNotNull(managedAccount(accountId, user))
+        account.activo = active
         return account
     }
 
@@ -288,13 +324,13 @@ internal fun calculateAppliedPayment(
     exchangeRate: BigDecimal?
 ): BigDecimal {
     require(paidCurrency in setOf("PEN", "USD") && debtCurrency in setOf("PEN", "USD"))
-    val converted = when {
-        paidCurrency == debtCurrency -> {
+    val converted = when (paidCurrency) {
+        debtCurrency -> {
             require(exchangeRate == null)
             paidAmount
         }
 
-        paidCurrency == "PEN" -> paidAmount.divide(requireNotNull(exchangeRate), 2, RoundingMode.HALF_UP)
+        "PEN" -> paidAmount.divide(requireNotNull(exchangeRate), 2, RoundingMode.HALF_UP)
         else -> paidAmount.multiply(requireNotNull(exchangeRate)).setScale(2, RoundingMode.HALF_UP)
     }
     require(converted > BigDecimal.ZERO && converted <= BigDecimal("9999999999.99"))
@@ -379,6 +415,18 @@ internal fun summarizeCategories(
                 paidCurrency = requireNotNull(payment.monedaPagada),
                 exchangeRate = payment.tasaCambio,
                 sourceAccountName = payment.operacionId?.let { operationId ->
+                    rows.firstOrNull { it.operacionId == operationId && it.cuenta.id != account.id }?.cuenta?.nombre
+                }
+            )
+        }
+    } else emptyList(),
+    debitPayments = if (account.tipo == "debito") {
+        rows.filter { it.cuenta.id == account.id && it.tipo == "retiro" && it.operacionId != null }.map { payment ->
+            DebitPaymentDetail(
+                category = payment.categoria.nombre,
+                paidAmount = payment.monto,
+                paidCurrency = payment.moneda,
+                targetAccountName = payment.operacionId?.let { operationId ->
                     rows.firstOrNull { it.operacionId == operationId && it.cuenta.id != account.id }?.cuenta?.nombre
                 }
             )

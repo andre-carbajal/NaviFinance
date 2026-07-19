@@ -33,10 +33,12 @@ queda aislado por su ID de Telegram; el bot usa long polling, por lo que no nece
    .\mvnw.cmd quarkus:dev
    ```
 
-Comandos: `/start`, `/cuenta_nueva`, `/cuentas`, `/registrar`, `/resumen` y `/cancelar`. Las cuentas de débito se crean
+Comandos: `/start`, `/cuentas`, `/registrar`, `/resumen` y `/cancelar`. Desde `/cuentas` puedes crear, editar,
+desactivar y reactivar cuentas. Las cuentas de débito se crean
 en una sola moneda (PEN o USD) y sólo aceptan movimientos en ella. Las cuentas de crédito mantienen deuda separada en
 PEN y USD: pueden registrar cargos en ambas y pagarse desde una cuenta de débito. Si la moneda pagada difiere de la
 deuda a reducir, el bot pide una tasa manual expresada como `1 USD = S/ X` y guarda el importe pagado y el aplicado.
+`/registrar` incluye la acción **Pagar tarjeta**, que registra el pago vinculado en ambas cuentas.
 
 `/resumen` muestra cada cuenta por separado. Para el mes actual presenta abonos y retiros en la moneda de cada débito;
 en crédito muestra cargos, pagos aplicados, deuda pendiente y los importes realmente pagados desde débito. El botón

@@ -12,7 +12,9 @@ enum class ConversationStep {
     ACCOUNT_CONFIRMING, SELECTING_TYPE, SELECTING_ACCOUNT, SELECTING_PAYMENT_SOURCE,
     SELECTING_DEBT_CURRENCY, EXPECTING_AMOUNT, EXPECTING_PAYMENT_AMOUNT, EXPECTING_EXCHANGE_RATE,
     SELECTING_CURRENCY, SELECTING_CATEGORY, EXPECTING_CATEGORY_NAME, EXPECTING_DESCRIPTION, EXPECTING_SOURCE,
-    EXPECTING_DATE, SELECTING_EDIT_FIELD, CONFIRMING, VOUCHER_REVIEW
+    EXPECTING_DATE, SELECTING_EDIT_FIELD, CONFIRMING, VOUCHER_REVIEW,
+    ACCOUNT_MANAGEMENT, ACCOUNT_RENAMING, ACCOUNT_ADJUSTING_PEN, ACCOUNT_ADJUSTING_USD,
+    ACCOUNT_ADJUST_CONFIRMING
 }
 
 enum class ResumeAction { SUMMARY, REGISTER, VOUCHER_RETRY }
@@ -26,6 +28,7 @@ data class ConversationState(
     var accountBalancePen: BigDecimal? = null,
     var accountBalanceUsd: BigDecimal? = null,
     var accountIdToConfigure: Long? = null,
+    var managedAccountId: Long? = null,
     var resumeAction: ResumeAction? = null,
     var editingField: String? = null,
     var lastTouched: Instant = Instant.now()

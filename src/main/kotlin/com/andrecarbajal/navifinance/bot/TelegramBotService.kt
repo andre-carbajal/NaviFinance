@@ -86,7 +86,6 @@ class TelegramBotService(
         val input = message.text.trim()
         when (input.substringBefore(' ')) {
             "/start" -> start(chatId, user)
-            "/cuenta_nueva" -> newAccount(chatId)
             "/cuentas" -> listAccounts(chatId, user)
             "/registrar" -> if (
                 ensureAccountRegistered(chatId, user) &&
@@ -105,11 +104,11 @@ class TelegramBotService(
     private fun start(chatId: Long, user: Usuario) {
         states.clear(chatId)
         if (finance.activeAccounts(user).isEmpty()) {
-            send(chatId, "¡Bienvenido! Primero registremos tu primera cuenta.")
-            newAccount(chatId)
+            send(chatId, "¡Bienvenido! Primero registremos tu primera cuenta desde el menú de cuentas.")
+            listAccounts(chatId, user)
         } else send(
             chatId,
-            "¡Hola! Usa /registrar para añadir un retiro o abono. También: /cuentas, /resumen y /cancelar."
+            "¡Hola! Usa /registrar para añadir movimientos o pagar una tarjeta. También: /cuentas, /resumen y /cancelar."
         )
     }
 
@@ -268,14 +267,93 @@ class TelegramBotService(
 
     private fun listAccounts(chatId: Long, user: Usuario) {
         val accounts = finance.activeAccounts(user)
+        states.put(chatId, ConversationState(ConversationStep.ACCOUNT_MANAGEMENT))
+        val message =
+            if (accounts.isEmpty()) "No tienes cuentas activas." else accounts.joinToString("\n", "Tus cuentas:\n") {
+                "• ${it.nombre} (${it.tipo}${it.moneda?.let { currency -> " $currency" } ?: ""})${if (it.hasConfiguredBalances()) "" else " — saldo pendiente"}"
+            }
+        val buttons = accounts.map { listOf(button("⚙️ ${it.nombre}", "manage-account:${it.id}")) }.toMutableList()
+        buttons += listOf(button("➕ Nueva cuenta", "accounts:new"))
+        if (finance.inactiveAccounts(user).isNotEmpty()) buttons += listOf(
+            button(
+                "🗃️ Ver inactivas",
+                "accounts:inactive"
+            )
+        )
+        send(chatId, message, keyboard(buttons))
+    }
+
+    private fun showInactiveAccounts(chatId: Long, user: Usuario) {
+        val accounts = finance.inactiveAccounts(user)
+        states.put(chatId, ConversationState(ConversationStep.ACCOUNT_MANAGEMENT))
+        val buttons = accounts.map { listOf(button("♻️ ${it.nombre}", "manage-account:${it.id}")) }.toMutableList()
+        buttons += listOf(button("← Cuentas activas", "accounts:active"))
         send(
             chatId,
-            if (accounts.isEmpty()) "No tienes cuentas activas. Usa /cuenta_nueva." else accounts.joinToString(
-                "\n",
-                "Tus cuentas:\n"
-            ) {
-                "• ${it.nombre} (${it.tipo}${it.moneda?.let { currency -> " $currency" } ?: ""})${if (it.hasConfiguredBalances()) "" else " — saldo pendiente"}"
-            })
+            if (accounts.isEmpty()) "No tienes cuentas inactivas." else "Cuentas inactivas:",
+            keyboard(buttons)
+        )
+    }
+
+    private fun showAccountManagement(chatId: Long, user: Usuario, accountId: Long) {
+        val account = finance.managedAccount(accountId, user) ?: run { send(chatId, "Esa cuenta no existe."); return }
+        states.put(chatId, ConversationState(ConversationStep.ACCOUNT_MANAGEMENT, managedAccountId = accountId))
+        val balance = if (account.hasConfiguredBalances()) {
+            if (account.tipo == "debito") Money.format(
+                if (account.moneda == "USD") requireNotNull(account.saldoBaseUsd) else requireNotNull(
+                    account.saldoBasePen
+                ), requireNotNull(account.moneda)
+            )
+            else "PEN ${Money.format(requireNotNull(account.saldoBasePen), "PEN")} · USD ${
+                Money.format(
+                    requireNotNull(
+                        account.saldoBaseUsd
+                    ), "USD"
+                )
+            }"
+        } else "Sin saldo configurado"
+        val rows = mutableListOf(
+            listOf(button("✏️ Renombrar", "manage:rename")),
+            listOf(button("💰 Ajustar saldo", "manage:balance"))
+        )
+        if (account.tipo == "credito" && account.activo) rows += listOf(button("💳 Pagar desde débito", "manage:pay"))
+        rows += listOf(button(if (account.activo) "🗃️ Desactivar" else "♻️ Reactivar", "manage:toggle"))
+        rows += listOf(button("← Volver", if (account.activo) "accounts:active" else "accounts:inactive"))
+        send(
+            chatId,
+            "🏦 ${account.nombre}\nTipo: ${account.tipo}${account.moneda?.let { " $it" } ?: ""}\nSaldo configurado: $balance",
+            keyboard(rows))
+    }
+
+    private fun showAccountAdjustmentConfirmation(
+        chatId: Long,
+        account: com.andrecarbajal.navifinance.entity.Cuenta,
+        state: ConversationState
+    ) {
+        state.step = ConversationStep.ACCOUNT_ADJUST_CONFIRMING
+        val balance = if (account.tipo == "debito") {
+            val currency = requireNotNull(account.moneda)
+            Money.format(
+                requireNotNull(if (currency == "USD") state.accountBalanceUsd else state.accountBalancePen),
+                currency
+            )
+        } else "PEN ${Money.format(requireNotNull(state.accountBalancePen), "PEN")} · USD ${
+            Money.format(
+                requireNotNull(
+                    state.accountBalanceUsd
+                ), "USD"
+            )
+        }"
+        send(
+            chatId,
+            "Nuevo saldo actual para ${account.nombre}: $balance\n\nEsto conserva el historial y usa este valor como nueva referencia. ¿Confirmas?",
+            keyboard(
+                listOf(
+                    listOf(button("✅ Confirmar ajuste", "account-adjust-confirm")),
+                    listOf(button("❌ Cancelar", "cancel"))
+                )
+            )
+        )
     }
 
     private fun summary(chatId: Long, user: Usuario) {
@@ -287,7 +365,7 @@ class TelegramBotService(
         val month = YearMonth.now()
         val summaries = finance.monthlyAccountSummaries(user, month)
         if (summaries.isEmpty()) {
-            send(chatId, "No tienes cuentas activas. Usa /cuenta_nueva.")
+            send(chatId, "No tienes cuentas activas. Usa /cuentas para crear una.")
             return
         }
         send(chatId, "Resumen del mes ${month.monthValue.toString().padStart(2, '0')}/${month.year}:")
@@ -328,7 +406,39 @@ class TelegramBotService(
         else send(
             chatId,
             "¿Qué deseas registrar?",
-            keyboard(listOf(listOf(button("➖ Retiro", "type:retiro"), button("➕ Abono", "type:abono"))))
+            keyboard(
+                listOf(
+                    listOf(button("➖ Retiro", "type:retiro"), button("➕ Abono", "type:abono")),
+                    listOf(button("💳 Pagar tarjeta", "payment:new"))
+                )
+            )
+        )
+    }
+
+    private fun beginNewCreditPayment(chatId: Long, user: Usuario) {
+        val sources = finance.activeDebitAccounts(user)
+        if (sources.isEmpty()) {
+            send(chatId, "Necesitas una cuenta de débito configurada para pagar la tarjeta."); return
+        }
+        val state = ConversationState(ConversationStep.SELECTING_PAYMENT_SOURCE, TransactionDraft(type = "abono"))
+        states.put(chatId, state)
+        send(
+            chatId,
+            "Elige la cuenta de débito desde la que pagarás.",
+            keyboard(sources.map { listOf(button("${it.nombre} (${it.moneda})", "payment-source-new:${it.id}")) })
+        )
+    }
+
+    private fun chooseCreditAccount(chatId: Long, user: Usuario, state: ConversationState) {
+        val accounts = finance.activeAccounts(user).filter { it.tipo == "credito" && it.hasConfiguredBalances() }
+        if (accounts.isEmpty()) {
+            states.clear(chatId); send(chatId, "No tienes tarjetas de crédito configuradas."); return
+        }
+        state.step = ConversationStep.SELECTING_ACCOUNT
+        send(
+            chatId,
+            "Elige la tarjeta de crédito que pagarás.",
+            keyboard(accounts.map { listOf(button(it.nombre, "payment-credit:${it.id}")) })
         )
     }
 
@@ -348,6 +458,96 @@ class TelegramBotService(
             ); return
         }
         when {
+            data == "accounts:new" && state.step == ConversationStep.ACCOUNT_MANAGEMENT -> newAccount(chatId)
+
+            data == "accounts:active" && state.step == ConversationStep.ACCOUNT_MANAGEMENT -> listAccounts(chatId, user)
+
+            data == "accounts:inactive" && state.step == ConversationStep.ACCOUNT_MANAGEMENT -> showInactiveAccounts(
+                chatId,
+                user
+            )
+
+            data.startsWith("manage-account:") && state.step == ConversationStep.ACCOUNT_MANAGEMENT ->
+                data.removePrefix("manage-account:").toLongOrNull()?.let { showAccountManagement(chatId, user, it) }
+                    ?: send(chatId, "Esa cuenta no es válida.")
+
+            data == "manage:rename" && state.step == ConversationStep.ACCOUNT_MANAGEMENT -> {
+                state.step = ConversationStep.ACCOUNT_RENAMING
+                send(chatId, "Escribe el nuevo nombre de la cuenta.")
+            }
+
+            data == "manage:balance" && state.step == ConversationStep.ACCOUNT_MANAGEMENT -> {
+                val account = state.managedAccountId?.let { finance.managedAccount(it, user) } ?: run {
+                    send(
+                        chatId,
+                        "Esa cuenta no existe."
+                    ); return
+                }
+                state.accountBalancePen = null
+                state.accountBalanceUsd = null
+                state.step =
+                    if (account.tipo == "debito" && account.moneda == "USD") ConversationStep.ACCOUNT_ADJUSTING_USD else ConversationStep.ACCOUNT_ADJUSTING_PEN
+                send(
+                    chatId,
+                    "Indica el saldo actual en ${if (state.step == ConversationStep.ACCOUNT_ADJUSTING_USD) "USD" else "PEN"}. Este ajuste no elimina movimientos previos."
+                )
+            }
+
+            data == "manage:toggle" && state.step == ConversationStep.ACCOUNT_MANAGEMENT -> {
+                val account = state.managedAccountId?.let { finance.managedAccount(it, user) } ?: run {
+                    send(
+                        chatId,
+                        "Esa cuenta no existe."
+                    ); return
+                }
+                val willBeActive = !account.activo
+                finance.setAccountActive(user, requireNotNull(account.id), willBeActive)
+                send(
+                    chatId,
+                    if (willBeActive) "✅ Cuenta reactivada." else "✅ Cuenta desactivada; su historial se conserva."
+                )
+                listAccounts(chatId, user)
+            }
+
+            data == "manage:pay" && state.step == ConversationStep.ACCOUNT_MANAGEMENT -> {
+                state.draft.type = "abono"
+                state.draft.accountId = state.managedAccountId
+                choosePaymentSource(chatId, user, state)
+            }
+
+            data == "account-adjust-confirm" && state.step == ConversationStep.ACCOUNT_ADJUST_CONFIRMING -> {
+                finance.adjustAccountBalances(
+                    user,
+                    requireNotNull(state.managedAccountId),
+                    requireNotNull(state.accountBalancePen),
+                    requireNotNull(state.accountBalanceUsd)
+                )
+                send(chatId, "✅ Saldo ajustado. Los movimientos anteriores se conservaron.")
+                showAccountManagement(chatId, user, requireNotNull(state.managedAccountId))
+            }
+
+            data == "payment:new" && state.step == ConversationStep.SELECTING_TYPE -> beginNewCreditPayment(
+                chatId,
+                user
+            )
+
+            data.startsWith("payment-source-new:") && state.step == ConversationStep.SELECTING_PAYMENT_SOURCE -> {
+                finance.account(data.removePrefix("payment-source-new:").toLongOrNull() ?: -1, user)
+                    ?.takeIf { it.tipo == "debito" && it.hasConfiguredBalances() }?.let { source ->
+                    state.draft.paymentSourceAccountId = source.id
+                    state.draft.paymentCurrency = source.moneda
+                    chooseCreditAccount(chatId, user, state)
+                } ?: send(chatId, "Esa cuenta de débito no está disponible.")
+            }
+
+            data.startsWith("payment-credit:") && state.step == ConversationStep.SELECTING_ACCOUNT -> {
+                finance.account(data.removePrefix("payment-credit:").toLongOrNull() ?: -1, user)
+                    ?.takeIf { it.tipo == "credito" && it.hasConfiguredBalances() }?.let { credit ->
+                    state.draft.accountId = credit.id
+                    chooseDebtCurrency(chatId, state)
+                } ?: send(chatId, "Esa tarjeta no está disponible.")
+            }
+
             data.startsWith("account-type:") && state.step == ConversationStep.ACCOUNT_TYPE -> {
                 state.accountType = data.removePrefix("account-type:")
                 if (state.accountType == "debito") {
@@ -502,6 +702,35 @@ class TelegramBotService(
                     )
                 )
             }
+
+            ConversationStep.ACCOUNT_RENAMING -> {
+                val accountId = state.managedAccountId ?: run { send(chatId, "Esa cuenta no existe."); return }
+                runCatching { finance.renameAccount(user, accountId, input) }
+                    .onSuccess { account ->
+                        send(chatId, "✅ Cuenta renombrada.")
+                        showAccountManagement(chatId, user, requireNotNull(account.id))
+                    }
+                    .onFailure { send(chatId, "El nombre de la cuenta no puede quedar vacío.") }
+            }
+
+            ConversationStep.ACCOUNT_ADJUSTING_PEN -> Money.parseNonNegative(input)?.let { balance ->
+                state.accountBalancePen = balance
+                val account = state.managedAccountId?.let { finance.managedAccount(it, user) } ?: return
+                if (account.tipo == "debito") {
+                    state.accountBalanceUsd = BigDecimal.ZERO
+                    showAccountAdjustmentConfirmation(chatId, account, state)
+                } else {
+                    state.step = ConversationStep.ACCOUNT_ADJUSTING_USD
+                    send(chatId, "Indica el saldo actual en USD.")
+                }
+            } ?: send(chatId, balanceValidationMessage())
+
+            ConversationStep.ACCOUNT_ADJUSTING_USD -> Money.parseNonNegative(input)?.let { balance ->
+                state.accountBalanceUsd = balance
+                val account = state.managedAccountId?.let { finance.managedAccount(it, user) } ?: return
+                if (account.tipo == "debito") state.accountBalancePen = BigDecimal.ZERO
+                showAccountAdjustmentConfirmation(chatId, account, state)
+            } ?: send(chatId, balanceValidationMessage())
 
             ConversationStep.ACCOUNT_BALANCE_PEN -> Money.parseNonNegative(input)?.let {
                 state.accountBalancePen = it
@@ -1001,13 +1230,25 @@ internal fun formatCategorySummary(summary: AccountCategorySummary): String = bu
             payment.exchangeRate?.let { append(" (1 USD = S/ ${it.stripTrailingZeros().toPlainString()})") }
         }
     }
+    if (summary.debitPayments.isNotEmpty()) {
+        append("\n\nPagos a tarjeta:")
+        summary.debitPayments.forEach { payment ->
+            append(
+                "\n• ${payment.category}: ${
+                    Money.format(
+                        payment.paidAmount,
+                        payment.paidCurrency
+                    )
+                } → ${payment.targetAccountName ?: "tarjeta de crédito"}"
+            )
+        }
+    }
 }
 
 internal fun botCommands(): List<BotCommand> = listOf(
     BotCommand("start", "Iniciar el bot"),
-    BotCommand("cuenta_nueva", "Registrar una cuenta"),
-    BotCommand("cuentas", "Ver tus cuentas"),
-    BotCommand("registrar", "Registrar un retiro o abono"),
+    BotCommand("cuentas", "Gestionar tus cuentas"),
+    BotCommand("registrar", "Registrar movimientos o pagar tarjeta"),
     BotCommand("resumen", "Ver el resumen del mes"),
     BotCommand("cancelar", "Cancelar el flujo actual")
 )
