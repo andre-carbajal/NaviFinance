@@ -3,7 +3,7 @@ name: NaviFinanceBot
 services:
   ollama:
     image: ollama/ollama:latest
-    restart: unless-stopped
+    restart: always
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -25,7 +25,7 @@ services:
 
   navifinancepostgres:
     image: postgres:16-alpine
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-finance}
       POSTGRES_USER: ${POSTGRES_USER:-finance}
@@ -40,7 +40,7 @@ services:
 
   navifinancebot:
     image: ghcr.io/andre-carbajal/navi-finance:latest
-    restart: unless-stopped
+    restart: always
     depends_on:
       navifinancepostgres:
         condition: service_healthy
